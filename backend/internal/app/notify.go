@@ -341,6 +341,8 @@ func num(n *int64) string {
 	return fmt.Sprintf("%d", *n)
 }
 func (a *App) processReminders() {
+	a.reminderMu.Lock()
+	defer a.reminderMu.Unlock()
 	g := a.general()
 	a.mu.RLock()
 	ds := make([]Dashboard, 0, len(a.runtimes))
@@ -368,40 +370,57 @@ func (a *App) processReminders() {
 					continue
 				}
 				key := fmt.Sprintf("%d:%s:%s:%d:%s", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt, kind)
-				var exists int
-				if a.store.DB.QueryRow("SELECT 1 FROM notifications WHERE dedupe_key=? AND status='sent'", key).Scan(&exists) == nil {
-					continue
-				}
 				body := fmt.Sprintf("Codex [%s] %s/%s 剩余 %.1f%%，重置时间 %s。", d.DisplayName, x.LimitID, x.WindowType, 100-x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
-				ok := true
-				errs := []string{}
-				if t, e := a.telegramSecret(); e == nil && t.Enabled && t.ChatID != 0 {
-					if e = tgSend(t, body); e != nil {
-						ok = false
-						errs = append(errs, e.Error())
-					}
-				}
-				if s, e := a.smtpSecret(); e == nil && s.Enabled {
-					if e = sendSMTP(s, "Codex 用量重置提醒", body); e != nil {
-						ok = false
-						errs = append(errs, e.Error())
-					}
-				}
-				status := "sent"
-				var sent any = time.Now().Unix()
-				if !ok {
-					status = "failed"
-					sent = nil
-				}
-				_, _ = a.store.DB.Exec(`INSERT INTO notifications(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at)
-				VALUES(?,?,?,?,?,?,?,?)
-				ON CONFLICT(dedupe_key) DO UPDATE SET
-				status=excluded.status,
-				attempts=notifications.attempts+1,
-				last_error=excluded.last_error,
-				sent_at=excluded.sent_at`, key, "configured", kind, status, 1, strings.Join(errs, "; "), at.Unix(), sent)
+				_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
+					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
+					VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, at.Unix(), body)
 			}
 		}
+	}
+	a.sendPendingReminders(now)
+}
+
+func (a *App) sendPendingReminders(now time.Time) {
+	type pendingReminder struct {
+		key  string
+		body string
+	}
+	rows, err := a.store.DB.Query(`SELECT dedupe_key,body FROM notifications
+		WHERE status!='sent' AND scheduled_at<=? AND scheduled_at>=? ORDER BY scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
+	if err != nil {
+		return
+	}
+	pending := []pendingReminder{}
+	for rows.Next() {
+		var p pendingReminder
+		if rows.Scan(&p.key, &p.body) == nil && p.body != "" {
+			pending = append(pending, p)
+		}
+	}
+	_ = rows.Close()
+	for _, p := range pending {
+		ok := true
+		errs := []string{}
+		if t, e := a.telegramSecret(); e == nil && t.Enabled && t.ChatID != 0 {
+			if e = tgSend(t, p.body); e != nil {
+				ok = false
+				errs = append(errs, e.Error())
+			}
+		}
+		if s, e := a.smtpSecret(); e == nil && s.Enabled {
+			if e = sendSMTP(s, "Codex 用量重置提醒", p.body); e != nil {
+				ok = false
+				errs = append(errs, e.Error())
+			}
+		}
+		status := "sent"
+		var sent any = now.Unix()
+		if !ok {
+			status = "failed"
+			sent = nil
+		}
+		_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=attempts+1,last_error=?,sent_at=? WHERE dedupe_key=?`,
+			status, strings.Join(errs, "; "), sent, p.key)
 	}
 }
 

@@ -35,6 +35,7 @@ type App struct {
 	mu            sync.RWMutex
 	runtimes      map[int64]*accountRuntime
 	loginAttempts sync.Map
+	reminderMu    sync.Mutex
 }
 type accountRuntime struct {
 	client     codexClient

@@ -39,14 +39,48 @@ CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INT
 CREATE TABLE IF NOT EXISTS daily_usage (date TEXT PRIMARY KEY, total_tokens INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS limit_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, limit_id TEXT NOT NULL, window_type TEXT NOT NULL, used_percent REAL NOT NULL, duration_mins INTEGER NOT NULL, resets_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_limits_time ON limit_snapshots(fetched_at);
-CREATE TABLE IF NOT EXISTS notifications (dedupe_key TEXT PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, scheduled_at INTEGER NOT NULL, sent_at INTEGER);
+CREATE TABLE IF NOT EXISTS notifications (dedupe_key TEXT PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, scheduled_at INTEGER NOT NULL, sent_at INTEGER, body TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS telegram_updates (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 `)
 	if err != nil {
 		return err
 	}
+	if err = s.ensureNotificationBody(); err != nil {
+		return err
+	}
 	return s.migrateAccounts()
+}
+
+func (s *Store) ensureNotificationBody() error {
+	rows, err := s.DB.Query("PRAGMA table_info(notifications)")
+	if err != nil {
+		return err
+	}
+	hasBody := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		hasBody = hasBody || name == "body"
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if hasBody {
+		return nil
+	}
+	// Legacy unsent rows have no recoverable message body. Remove them so the
+	// reminder scheduler can recreate every still-applicable retry from the
+	// current dashboard instead of having INSERT OR IGNORE collide with an
+	// empty-body row. Sent rows remain as dedupe records.
+	_, err = s.DB.Exec(`ALTER TABLE notifications ADD COLUMN body TEXT NOT NULL DEFAULT '';
+		DELETE FROM notifications WHERE status != 'sent';`)
+	return err
 }
 
 func (s *Store) migrateAccounts() error {

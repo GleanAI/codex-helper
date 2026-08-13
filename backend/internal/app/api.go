@@ -449,12 +449,64 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 			_, _ = a.store.DB.Exec("INSERT INTO daily_usage(account_id,date,total_tokens,fetched_at) VALUES(?,?,?,?) ON CONFLICT(account_id,date) DO UPDATE SET total_tokens=excluded.total_tokens,fetched_at=excluded.fetched_at", id, x.StartDate, x.Tokens, d.FetchedAt)
 		}
 	}
-	for _, x := range d.Limits {
-		_, _ = a.store.DB.Exec("INSERT INTO limit_snapshots(limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at,account_id) VALUES(?,?,?,?,?,?,?)", x.LimitID, x.WindowType, x.UsedPercent, x.WindowDurationMinutes, x.ResetsAt, d.FetchedAt, id)
+	resetDetected, e := a.storeLimitSnapshots(d)
+	if e != nil {
+		return e
 	}
 	rt.dash = d
 	_ = a.store.UpdateAccount(id, d.Account.Email, d.Account.PlanType, d.Account.Connected)
+	if resetDetected {
+		go a.processReminders()
+	}
 	return nil
+}
+
+const resetDropTolerance = 0.01
+
+func (a *App) storeLimitSnapshots(d Dashboard) (bool, error) {
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	g := a.general()
+	resetDetected := false
+	for _, x := range d.Limits {
+		var previousID, previousFetchedAt, previousResetsAt int64
+		var previousUsed float64
+		err = tx.QueryRow(`SELECT id,used_percent,resets_at,fetched_at FROM limit_snapshots
+			WHERE account_id=? AND limit_id=? AND window_type=? ORDER BY fetched_at DESC,id DESC LIMIT 1`,
+			d.AccountID, x.LimitID, x.WindowType).Scan(&previousID, &previousUsed, &previousResetsAt, &previousFetchedAt)
+		if err != nil && err != sql.ErrNoRows {
+			return false, err
+		}
+		age := d.FetchedAt - previousFetchedAt
+		if err == nil && g.NotifyAfter && age >= 0 && age <= int64((6*time.Hour).Seconds()) && previousUsed-x.UsedPercent > resetDropTolerance {
+			kind := "detected_after"
+			key := fmt.Sprintf("%d:%s:%s:detected:%d", d.AccountID, x.LimitID, x.WindowType, previousID)
+			now := time.Unix(d.FetchedAt, 0)
+			if previousResetsAt <= d.FetchedAt && now.Sub(time.Unix(previousResetsAt, 0)) <= 6*time.Hour {
+				kind = "after"
+				key = fmt.Sprintf("%d:%s:%s:%d:after", d.AccountID, x.LimitID, x.WindowType, previousResetsAt)
+			}
+			body := fmt.Sprintf("Codex [%s] %s/%s 额度已重置：已用 %.1f%% → %.1f%%，下次重置时间 %s。",
+				d.DisplayName, x.LimitID, x.WindowType, previousUsed, x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+			_, err = tx.Exec(`INSERT OR IGNORE INTO notifications
+				(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
+				VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, d.FetchedAt, body)
+			if err != nil {
+				return false, err
+			}
+			resetDetected = true
+		}
+		if _, err = tx.Exec("INSERT INTO limit_snapshots(limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at,account_id) VALUES(?,?,?,?,?,?,?)", x.LimitID, x.WindowType, x.UsedPercent, x.WindowDurationMinutes, x.ResetsAt, d.FetchedAt, d.AccountID); err != nil {
+			return false, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return resetDetected, nil
 }
 
 type rawLimit struct {

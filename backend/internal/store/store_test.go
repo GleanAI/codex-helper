@@ -174,6 +174,44 @@ func TestPopulatedLegacyLimitSnapshotsMigrateToDefaultAccount(t *testing.T) {
 	}
 }
 
+func TestLegacyNotificationsGainBodyColumn(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "codex-helper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE notifications (
+		dedupe_key TEXT PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL,
+		status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+		scheduled_at INTEGER NOT NULL, sent_at INTEGER
+	);
+	INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at)
+		VALUES('pending-key','configured','after','pending',1);
+	INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at)
+		VALUES('sent-key','configured','after','sent',1,2);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	var count int
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE dedupe_key='pending-key'").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("legacy pending notification was not removed: count=%d err=%v", count, err)
+	}
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE dedupe_key='sent-key'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("sent dedupe notification was not preserved: count=%d err=%v", count, err)
+	}
+	if _, err = s.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body) VALUES('key','configured','after','pending',1,'message')`); err != nil {
+		t.Fatalf("body column was not added: %v", err)
+	}
+}
+
 func TestBackupIncludesCommittedWALData(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
