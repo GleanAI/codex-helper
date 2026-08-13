@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, toErrorMessage } from "./api";
-import { decodeDashboard, decodeDeviceLogin, decodeGeneral } from "./types";
+import {
+  decodeAction,
+  decodeDashboard,
+  decodeDeviceLogin,
+  decodeGeneral,
+  decodeTelegram,
+} from "./types";
 
 describe("API decoders", () => {
   it("保留 Dashboard 的 null 与 optional 摘要", () => {
@@ -45,6 +51,21 @@ describe("API decoders", () => {
         userCode: "ABC",
       }).userCode,
     ).toBe("ABC");
+  });
+
+  it("保留 Telegram 操作警告", () => {
+    expect(
+      decodeTelegram({
+        chatId: 1,
+        enabled: false,
+        menuEnabled: false,
+        configured: true,
+        warning: "菜单同步失败",
+      }).warning,
+    ).toBe("菜单同步失败");
+    expect(decodeAction({ ok: true, warning: "键盘清理失败" }).warning).toBe(
+      "键盘清理失败",
+    );
   });
 });
 

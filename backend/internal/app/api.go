@@ -131,8 +131,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	case p == "settings/telegram/test" && r.Method == "POST":
 		a.telegramTest(w, r)
 	case p == "settings/telegram/bind" && r.Method == "POST":
+		a.telegramMu.Lock()
 		code := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 		_ = a.store.SetJSON("telegram_bind", map[string]any{"code": code, "expires": time.Now().Add(10 * time.Minute).Unix()})
+		a.telegramMu.Unlock()
 		jsonOut(w, 200, map[string]string{"code": code})
 	case p == "maintenance/cleanup" && r.Method == "POST":
 		n, e := a.store.Cleanup(a.general().RetentionDays)

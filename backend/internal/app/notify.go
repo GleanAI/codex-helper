@@ -165,8 +165,10 @@ func sendSMTPWithTimeout(s SMTPSettings, subject, textBody, htmlBody string, tim
 func (a *App) telegramSettings() TelegramSettings {
 	var t TelegramSettings
 	a.store.GetJSON("telegram", &t)
-	if _, ok := a.store.Get("telegram_token"); ok {
-		t.Configured = true
+	if enc, ok := a.store.Get("telegram_token"); ok {
+		if token, err := a.vault.Decrypt(enc); err == nil {
+			t.Configured = token != ""
+		}
 	}
 	return t
 }
@@ -181,6 +183,12 @@ func (a *App) telegramSecret() (TelegramSettings, error) {
 func (a *App) telegramAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		jsonOut(w, 200, a.telegramSettings())
+		return
+	}
+	a.telegramMu.Lock()
+	defer a.telegramMu.Unlock()
+	if r.Method == http.MethodDelete {
+		a.telegramDelete(w)
 		return
 	}
 	var in TelegramSettings
@@ -208,13 +216,52 @@ func (a *App) telegramAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.BotName = me.Result.FirstName + " @" + me.Result.Username
-	enc, _ := a.vault.Encrypt(in.Token)
+	enc, e := a.vault.Encrypt(in.Token)
+	if e != nil {
+		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		return
+	}
 	safe := in
 	safe.Token = ""
 	safe.Configured = true
-	_ = a.store.Set("telegram_token", enc)
-	_ = a.store.SetJSON("telegram", safe)
-	jsonOut(w, 200, safe)
+	settingsJSON, e := json.Marshal(safe)
+	if e == nil {
+		e = a.store.SaveTelegram(string(settingsJSON), enc, old.Token != "" && old.Token != in.Token)
+	}
+	if e != nil {
+		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		return
+	}
+	response := TelegramSettingsResponse{TelegramSettings: safe}
+	if safe.ChatID != 0 && old.MenuEnabled != safe.MenuEnabled {
+		message := "查询菜单已关闭。"
+		if safe.MenuEnabled {
+			message = "查询菜单已启用。"
+		}
+		if e = tgSend(safeWithToken(safe, in.Token), message); e != nil {
+			response.Warning = "设置已保存，但 Telegram 菜单同步失败，请稍后发送测试消息重试"
+		}
+	}
+	jsonOut(w, 200, response)
+}
+func safeWithToken(t TelegramSettings, token string) TelegramSettings {
+	t.Token = token
+	return t
+}
+func (a *App) telegramDelete(w http.ResponseWriter) {
+	old, _ := a.telegramSecret()
+	if e := a.store.DeleteTelegram(); e != nil {
+		jsonOut(w, 500, map[string]string{"error": e.Error()})
+		return
+	}
+	response := map[string]any{"ok": true}
+	if old.Token != "" && old.ChatID != 0 {
+		old.MenuEnabled = false
+		if e := tgSend(old, "Codex Helper 已解除 Telegram Bot 绑定。"); e != nil {
+			response["warning"] = "配置已删除，但未能从 Telegram 会话移除旧菜单"
+		}
+	}
+	jsonOut(w, 200, response)
 }
 func (a *App) telegramTest(w http.ResponseWriter, r *http.Request) {
 	t, e := a.telegramSecret()
@@ -231,7 +278,10 @@ func (a *App) telegramTest(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
-func tgCall(token, method string, p any, out any) error {
+
+var tgCall = telegramCall
+
+func telegramCall(token, method string, p any, out any) error {
 	b, _ := json.Marshal(p)
 	req, e := http.NewRequestWithContext(context.Background(), "POST", "https://api.telegram.org/bot"+token+"/"+method, bytes.NewReader(b))
 	if e != nil {
@@ -254,6 +304,8 @@ func tgSend(t TelegramSettings, text string) error {
 	params := map[string]any{"chat_id": t.ChatID, "text": text, "parse_mode": "HTML"}
 	if t.MenuEnabled {
 		params["reply_markup"] = map[string]any{"keyboard": [][]map[string]string{{{"text": "当前用量"}, {"text": "重置时间"}}, {{"text": "历史概览"}, {"text": "账户信息"}}, {{"text": "立即刷新"}}}, "resize_keyboard": true}
+	} else {
+		params["reply_markup"] = map[string]any{"remove_keyboard": true}
 	}
 	return tgCall(t.Token, "sendMessage", params, &out)
 }
@@ -288,14 +340,27 @@ func (a *App) telegramLoop() {
 		for _, u := range out.Result {
 			offset = u.UpdateID + 1
 			if u.Message != nil {
-				a.handleTG(t, u.Message.Chat.ID, u.Message.Text)
+				current, currentErr := a.telegramSecret()
+				if currentErr == nil && current.Configured && current.Token == t.Token {
+					a.handleTG(current, u.Message.Chat.ID, u.Message.Text)
+				}
 			}
 		}
-		_, _ = a.store.DB.Exec("UPDATE telegram_updates SET offset=? WHERE id=1", offset)
+		current, currentErr := a.telegramSecret()
+		if currentErr == nil && current.Configured && current.Token == t.Token {
+			_, _ = a.store.DB.Exec("UPDATE telegram_updates SET offset=? WHERE id=1", offset)
+		}
 	}
 }
 func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 	if strings.HasPrefix(text, "/bind ") {
+		a.telegramMu.Lock()
+		defer a.telegramMu.Unlock()
+		current, e := a.telegramSecret()
+		if e != nil || !current.Configured || current.Token != t.Token {
+			return
+		}
+		t = current
 		var b struct {
 			Code    string `json:"code"`
 			Expires int64  `json:"expires"`

@@ -94,6 +94,61 @@ test("shows the build version on login", async ({ page }) => {
   const badge = page.locator(".login .version-badge");
   await expect(badge).toBeVisible();
   await expect(badge).toHaveText("vtest");
+  const github = page.getByRole("link", {
+    name: "在 GitHub 上查看 Codex Helper",
+  });
+  await expect(github).toHaveAttribute(
+    "href",
+    "https://github.com/zhoujun0601/codex-helper",
+  );
+  await expect(github).toHaveAttribute("target", "_blank");
+});
+
+test("shows the GitHub link after login", async ({ page }) => {
+  await openSettings(page);
+  const github = page.getByRole("link", {
+    name: "在 GitHub 上查看 Codex Helper",
+  });
+  await expect(github).toBeVisible();
+  await expect(github).toHaveAttribute(
+    "href",
+    "https://github.com/zhoujun0601/codex-helper",
+  );
+});
+
+test("saves disabled Telegram switches and removes the configuration", async ({
+  page,
+}) => {
+  let savedBody: Record<string, unknown> | undefined;
+  let deleted = false;
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const key = new URL(request.url()).pathname.replace("/api/v1/", "");
+    if (key === "settings/telegram" && request.method() === "PUT") {
+      savedBody = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({
+        json: { ...responses["settings/telegram"], ...savedBody },
+      });
+    }
+    if (key === "settings/telegram" && request.method() === "DELETE") {
+      deleted = true;
+      return route.fulfill({ json: { ok: true } });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Telegram" }).click();
+  await page.getByLabel("启用提醒").uncheck();
+  await page.getByLabel("启用查询菜单").uncheck();
+  await page.getByRole("button", { name: "验证并保存" }).click();
+  await expect.poll(() => savedBody?.enabled).toBe(false);
+  expect(savedBody?.menuEnabled).toBe(false);
+
+  await page.getByRole("button", { name: "解除绑定" }).click();
+  await expect.poll(() => deleted).toBe(true);
+  await expect(page.getByRole("button", { name: "解除绑定" })).toBeDisabled();
+  await expect(page.getByText("Telegram Bot 配置已删除")).toBeVisible();
 });
 
 async function layout(page: Page) {

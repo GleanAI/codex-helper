@@ -11,6 +11,7 @@ import {
   Activity,
   Bell,
   Check,
+  Github,
   LogOut,
   Moon,
   RefreshCw,
@@ -24,6 +25,7 @@ import { AuthProvider, useAuth } from "./auth";
 import { ThemeProvider, useTheme } from "./theme";
 import {
   decodeAccounts,
+  decodeAction,
   decodeCode,
   decodeDashboard,
   decodeDeviceLogin,
@@ -42,6 +44,23 @@ import {
 import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
+const repositoryURL = "https://github.com/zhoujun0601/codex-helper";
+
+function GitHubLink({ className = "" }: { className?: string }) {
+  return (
+    <a
+      className={`github-link ${className}`.trim()}
+      href={repositoryURL}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="在 GitHub 上查看 Codex Helper"
+      title="GitHub"
+    >
+      <Github />
+      <span>GitHub</span>
+    </a>
+  );
+}
 
 function App() {
   const { status, authenticated } = useAuth();
@@ -158,6 +177,7 @@ function Login({ version }: { version: string }) {
           }
         }}
       >
+        <GitHubLink className="login-github" />
         <Brand version={version} />
         <h2>欢迎回来</h2>
         <label>
@@ -198,6 +218,7 @@ function Shell({ version }: { version: string }) {
           </button>
         </nav>
         <div className="aside-bottom">
+          <GitHubLink />
           <button
             onClick={() =>
               void saveTheme(theme === "dark" ? "light" : "dark").catch(
@@ -987,7 +1008,7 @@ function Telegram() {
             body: JSON.stringify(v),
           });
           setV({ ...x, token: "" });
-          setMsg("Bot 已验证并保存");
+          setMsg(x.warning || "Bot 已验证并保存");
         } catch (x) {
           setMsg(toErrorMessage(x));
         }
@@ -1023,6 +1044,10 @@ function Telegram() {
           启用查询菜单
         </label>
       </div>
+      <p className="hint telegram-switch-hint">
+        “启用提醒”只控制自动额度提醒，关闭后仍可发送测试消息；“启用查询菜单”关闭后将停止查询并移除
+        Telegram 键盘。
+      </p>
       <button>验证并保存</button>
       <div className="actions">
         <button
@@ -1052,6 +1077,36 @@ function Telegram() {
           }}
         >
           发送测试
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={!v.configured}
+          onClick={async () => {
+            if (
+              !confirm(
+                "确定要解除 Telegram Bot 绑定吗？这会删除 Bot Token、Chat ID、开关和未使用的绑定码。",
+              )
+            )
+              return;
+            try {
+              const x = await del("settings/telegram", decodeAction);
+              setV({
+                chatId: 0,
+                enabled: false,
+                menuEnabled: false,
+                configured: false,
+                token: "",
+              });
+              setCode("");
+              setMsg(x.warning || "Telegram Bot 配置已删除");
+            } catch (error) {
+              setMsg(toErrorMessage(error));
+            }
+          }}
+        >
+          <Trash2 />
+          解除绑定
         </button>
       </div>
       {code && (

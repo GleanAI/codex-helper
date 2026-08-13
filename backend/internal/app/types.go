@@ -29,6 +29,10 @@ type TelegramSettings struct {
 	Configured  bool   `json:"configured"`
 	BotName     string `json:"botName,omitempty"`
 }
+type TelegramSettingsResponse struct {
+	TelegramSettings
+	Warning string `json:"warning,omitempty"`
+}
 type AccountView struct {
 	Email     *string `json:"email"`
 	AuthMode  *string `json:"authMode"`

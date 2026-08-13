@@ -305,6 +305,39 @@ func (s *Store) SetJSON(key string, v any) error {
 	}
 	return s.Set(key, string(b))
 }
+func (s *Store) SaveTelegram(settingsJSON, encryptedToken string, resetOffset bool) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	for key, value := range map[string]string{"telegram": settingsJSON, "telegram_token": encryptedToken} {
+		if _, err = tx.Exec("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", key, value, now); err != nil {
+			return err
+		}
+	}
+	if resetOffset {
+		if _, err = tx.Exec("UPDATE telegram_updates SET offset=0 WHERE id=1"); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+func (s *Store) DeleteTelegram() error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM settings WHERE key IN ('telegram','telegram_token','telegram_bind')"); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE telegram_updates SET offset=0 WHERE id=1"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *Store) GetJSON(key string, v any) bool {
 	raw, ok := s.Get(key)
 	return ok && json.Unmarshal([]byte(raw), v) == nil

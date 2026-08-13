@@ -83,8 +83,13 @@ export interface TelegramSettingsResponse {
   menuEnabled: boolean;
   configured: boolean;
   botName?: string;
+  warning?: string;
 }
 export type TelegramSettingsForm = TelegramSettingsResponse & { token: string };
+export interface ActionResponse {
+  ok: boolean;
+  warning?: string;
+}
 export interface SMTPSettingsResponse {
   host: string;
   port: number;
@@ -223,6 +228,14 @@ export const decodeTelegram: Decoder<TelegramSettingsResponse> = (value) => {
     menuEnabled: boolean(x.menuEnabled, "menuEnabled"),
     configured: boolean(x.configured, "configured"),
     ...(typeof x.botName === "string" ? { botName: x.botName } : {}),
+    ...(typeof x.warning === "string" ? { warning: x.warning } : {}),
+  };
+};
+export const decodeAction: Decoder<ActionResponse> = (value) => {
+  const x = record(value);
+  return {
+    ok: boolean(x.ok, "ok"),
+    ...(typeof x.warning === "string" ? { warning: x.warning } : {}),
   };
 };
 export const decodeSMTP: Decoder<SMTPSettingsResponse> = (value) => {
