@@ -71,6 +71,7 @@ select {
   gap: 10px;
   font-weight: 700;
   letter-spacing: -0.03em;
+  white-space: nowrap;
 }
 .logo svg {
   color: var(--accent);

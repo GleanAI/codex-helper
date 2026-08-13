@@ -1,7 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const responses: Record<string, unknown> = {
-  "system/status": { initialized: true, appServer: true, version: "test" },
+  "system/status": {
+    initialized: true,
+    appServer: true,
+    version: "0.3.0-beta.1",
+  },
   "auth/me": { username: "admin" },
   "settings/general": {
     timezone: "America/New_York",
@@ -60,9 +64,28 @@ async function openSettings(page: Page) {
 
 test("shows the build version in the authenticated brand", async ({ page }) => {
   await openSettings(page);
-  const badge = page.locator("aside .version-badge");
+  const brand = page.locator("aside .logo");
+  const badge = brand.locator(".version-badge");
   await expect(badge).toBeVisible();
-  await expect(badge).toHaveText("vtest");
+  await expect(badge).toHaveText("v0.3.0-beta.1");
+  await expect(brand).toHaveCSS("white-space", "nowrap");
+  const layout = await brand.evaluate((element) => {
+    const badgeElement = element.querySelector(".version-badge");
+    const nameElement = element.querySelector(".brand-name");
+    const iconElement = element.querySelector("svg");
+    if (!badgeElement || !nameElement || !iconElement)
+      throw new Error("brand is incomplete");
+    const badgeRect = badgeElement.getBoundingClientRect();
+    const nameRect = nameElement.getBoundingClientRect();
+    const iconRect = iconElement.getBoundingClientRect();
+    return {
+      badgeCenter: badgeRect.top + badgeRect.height / 2,
+      nameCenter: nameRect.top + nameRect.height / 2,
+      iconCenter: iconRect.top + iconRect.height / 2,
+    };
+  });
+  expect(Math.abs(layout.badgeCenter - layout.nameCenter)).toBeLessThan(1);
+  expect(Math.abs(layout.iconCenter - layout.nameCenter)).toBeLessThan(1);
 });
 
 test("shows the build version before setup", async ({ page }) => {

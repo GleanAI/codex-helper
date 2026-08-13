@@ -88,7 +88,7 @@ const Splash = () => (
 function Brand({ version }: { version?: string }) {
   return (
     <div className="logo">
-      <Zap /> Codex Helper
+      <Zap /> <span className="brand-name">Codex Helper</span>
       {version && <span className="version-badge">v{version}</span>}
     </div>
   );
