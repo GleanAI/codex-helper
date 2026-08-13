@@ -49,10 +49,16 @@ const responses: Record<string, unknown> = {
   },
 };
 
-async function openSettings(page: Page) {
+async function openSettings(page: Page, version = "0.3.0-beta.1") {
   await page.route("**/api/v1/**", async (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     await new Promise((resolve) => setTimeout(resolve, 40));
+    if (key === "system/status") {
+      await route.fulfill({
+        json: { initialized: true, appServer: true, version },
+      });
+      return;
+    }
     await route.fulfill({ json: responses[key] ?? {} });
   });
   await page.goto("/settings");
@@ -82,10 +88,34 @@ test("shows the build version in the authenticated brand", async ({ page }) => {
       badgeCenter: badgeRect.top + badgeRect.height / 2,
       nameCenter: nameRect.top + nameRect.height / 2,
       iconCenter: iconRect.top + iconRect.height / 2,
+      iconWidth: iconRect.width,
+      iconHeight: iconRect.height,
+      iconFlexShrink: getComputedStyle(iconElement).flexShrink,
     };
   });
   expect(Math.abs(layout.badgeCenter - layout.nameCenter)).toBeLessThan(1);
   expect(Math.abs(layout.iconCenter - layout.nameCenter)).toBeLessThan(1);
+  expect(layout.iconWidth).toBe(30);
+  expect(layout.iconHeight).toBe(30);
+  expect(layout.iconFlexShrink).toBe("0");
+});
+
+test("keeps the authenticated brand on one line with a release version", async ({
+  page,
+}) => {
+  await openSettings(page, "0.2.0");
+  const brand = page.locator("aside .logo");
+  await expect(brand).toContainText("Codex Helper");
+  await expect(brand.locator(".version-badge")).toHaveText("v0.2.0");
+  const centers = await brand
+    .locator("svg, .brand-name, .version-badge")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.top + rect.height / 2;
+      }),
+    );
+  expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(1);
 });
 
 test("shows the build version before setup", async ({ page }) => {

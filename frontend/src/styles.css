@@ -230,6 +230,11 @@ aside {
 aside .logo {
   padding: 0 10px 28px;
 }
+aside .logo svg {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+}
 nav {
   display: flex;
   flex-direction: column;
