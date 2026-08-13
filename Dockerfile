@@ -3,6 +3,7 @@ FROM node:24.19.0-bookworm-slim AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/src ./src
+COPY frontend/scripts ./scripts
 COPY frontend/index.html ./index.html
 RUN npm ci && npm run build
 

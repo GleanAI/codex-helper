@@ -1,0 +1,6 @@
+node_modules
+../backend/internal/web/dist
+package-lock.json
+tsconfig.tsbuildinfo
+test-results
+playwright-report

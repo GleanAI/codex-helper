@@ -25,7 +25,7 @@ docker run --rm \
 
 ```bash
 docker run --rm -v "$PWD/frontend:/src:ro" node:24.19.0-bookworm-slim \
-  sh -c 'cp -a /src /tmp/frontend && cd /tmp/frontend && npm ci --no-audit --no-fund && npm run build && npm test'
+  sh -c 'cp -a /src /tmp/frontend && cd /tmp/frontend && npm ci --no-audit --no-fund && npm run check'
 ```
 
 依赖或安全改动额外运行：

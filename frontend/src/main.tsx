@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
@@ -19,97 +19,40 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
+import { api, del, get, post, put, toErrorMessage } from "./api";
+import { AuthProvider, useAuth } from "./auth";
+import { ThemeProvider, useTheme } from "./theme";
 import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { api, del, post, put } from "./api";
+  decodeAccounts,
+  decodeCode,
+  decodeDashboard,
+  decodeDeviceLogin,
+  decodeGeneral,
+  decodeOK,
+  decodeSMTP,
+  decodeTelegram,
+  type Account,
+  type Dashboard as Dash,
+  type DeviceLogin,
+  type GeneralSettings,
+  type Limit,
+  type SMTPSettingsForm,
+  type TelegramSettingsForm,
+} from "./types";
 import "./styles.css";
 
-type Status = { initialized: boolean; appServer: boolean; version: string };
-type Limit = {
-  limitId: string;
-  limitName?: string;
-  windowType: string;
-  usedPercent: number;
-  windowDurationMinutes: number;
-  resetsAt: number;
-};
-type Point = { date: string; totalTokens: number };
-type Account = {
-  id: number;
-  displayName: string;
-  email?: string;
-  planType?: string;
-  expectedKind: "any" | "personal" | "team";
-  actualKind: "unknown" | "personal" | "team";
-  validationStatus: "pending" | "matched" | "mismatch" | "unknown";
-  possibleDuplicate: boolean;
-  connected: boolean;
-};
-type DeviceLogin = {
-  accountId: number;
-  verificationUrl: string;
-  userCode: string;
-};
-type Dash = {
-  accountId: number;
-  displayName: string;
-  account: { email?: string; planType?: string; connected: boolean };
-  limits: Limit[];
-  summary: {
-    lifetimeTokens?: number;
-    peakDailyTokens?: number;
-    currentStreakDays?: number;
-    longestRunningTurnSec?: number;
-  };
-  usage: Point[];
-  fetchedAt: number;
-  stale: boolean;
-  lastError?: string;
-};
+const UsageChart = lazy(() => import("./usage-chart"));
+
 function App() {
-  const [s, setS] = useState<Status | null>(null);
-  const [auth, setAuth] = useState<boolean | null>(null);
-  useEffect(() => {
-    api<Status>("system/status").then((x) => {
-      setS(x);
-      if (x.initialized)
-        api("auth/me")
-          .then(() => setAuth(true))
-          .catch(() => setAuth(false));
-      else setAuth(false);
-    });
-  }, []);
-  if (!s || auth === null) return <Splash />;
-  if (!s.initialized)
-    return (
-      <Setup
-        version={s.version}
-        onDone={() => {
-          setS({ ...s, initialized: true });
-          setAuth(true);
-        }}
-      />
-    );
+  const { status, authenticated } = useAuth();
+  if (!status.initialized) return <Setup version={status.version} />;
   return (
     <BrowserRouter>
       <Routes>
-        {auth ? (
-          <Route
-            path="*"
-            element={<Shell version={s.version} logout={() => setAuth(false)} />}
-          />
+        {authenticated ? (
+          <Route path="*" element={<Shell version={status.version} />} />
         ) : (
-          <Route
-            path="*"
-            element={<Login version={s.version} done={() => setAuth(true)} />}
-          />
+          <Route path="*" element={<Login version={status.version} />} />
         )}
       </Routes>
     </BrowserRouter>
@@ -131,7 +74,8 @@ function Brand({ version }: { version?: string }) {
     </div>
   );
 }
-function Setup({ version, onDone }: { version: string; onDone: () => void }) {
+function Setup({ version }: { version: string }) {
+  const { setup } = useAuth();
   const [form, set] = useState({
     username: "admin",
     password: "",
@@ -141,10 +85,9 @@ function Setup({ version, onDone }: { version: string; onDone: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     try {
-      await post("setup", form);
-      onDone();
+      await setup(form.username, form.password, form.timezone);
     } catch (x) {
-      setErr((x as Error).message);
+      setErr(toErrorMessage(x));
     }
   }
   return (
@@ -197,7 +140,8 @@ function Setup({ version, onDone }: { version: string; onDone: () => void }) {
     </main>
   );
 }
-function Login({ version, done }: { version: string; done: () => void }) {
+function Login({ version }: { version: string }) {
+  const { login } = useAuth();
   const [u, setU] = useState("admin"),
     [p, setP] = useState(""),
     [e, setE] = useState("");
@@ -208,10 +152,9 @@ function Login({ version, done }: { version: string; done: () => void }) {
         onSubmit={async (x) => {
           x.preventDefault();
           try {
-            await post("auth/login", { username: u, password: p });
-            done();
+            await login(u, p);
           } catch (q) {
-            setE((q as Error).message);
+            setE(toErrorMessage(q));
           }
         }}
       >
@@ -235,18 +178,11 @@ function Login({ version, done }: { version: string; done: () => void }) {
     </main>
   );
 }
-function Shell({ version, logout }: { version: string; logout: () => void }) {
+function Shell({ version }: { version: string }) {
+  const { logout } = useAuth();
   const nav = useNavigate();
-  const [theme, setTheme] = useState(localStorage.theme || "system");
-  useEffect(() => {
-    document.documentElement.dataset.theme =
-      theme === "system"
-        ? matchMedia("(prefers-color-scheme:dark)").matches
-          ? "dark"
-          : "light"
-        : theme;
-    localStorage.theme = theme;
-  }, [theme]);
+  const { theme, saveTheme, error: themeError } = useTheme();
+  const [shellError, setShellError] = useState("");
   return (
     <div className="app">
       <aside>
@@ -262,19 +198,31 @@ function Shell({ version, logout }: { version: string; logout: () => void }) {
           </button>
         </nav>
         <div className="aside-bottom">
-          <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+          <button
+            onClick={() =>
+              void saveTheme(theme === "dark" ? "light" : "dark").catch(
+                () => undefined,
+              )
+            }
+          >
             {theme === "dark" ? <Sun /> : <Moon />}切换主题
           </button>
+          {themeError && <small className="error">{themeError}</small>}
           <button
             onClick={async () => {
               if (!confirm("确定要退出 Codex Helper 管理后台吗？")) return;
-              await post("auth/logout");
-              logout();
+              try {
+                setShellError("");
+                await logout();
+              } catch (error) {
+                setShellError(toErrorMessage(error));
+              }
             }}
           >
             <LogOut />
             退出
           </button>
+          {shellError && <small className="error">{shellError}</small>}
         </div>
       </aside>
       <section className="content">
@@ -288,50 +236,90 @@ function Shell({ version, logout }: { version: string; logout: () => void }) {
   );
 }
 function Dashboard() {
-  const [accounts, setAccounts] = useState<Account[]>([]),
+  const [accounts, setAccounts] = useState<Account[] | null>(null),
     [id, setId] = useState(+(localStorage.accountId || 0)),
     [d, setD] = useState<Dash | null>(null),
     [e, setE] = useState(""),
     [refresh, setRefresh] = useState<"idle" | "loading" | "done">("idle");
-  const loadAccounts = () =>
-    api<Account[]>("accounts").then((xs) => {
+  const requestRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const loadAccounts = async () => {
+    try {
+      const xs = await get("accounts", decodeAccounts);
       setAccounts(xs);
+      setE("");
       const next = xs.some((x) => x.id === id) ? id : xs[0]?.id || 0;
       if (next !== id) setId(next);
-    });
-  const load = async (accountId = id) => {
+    } catch (error) {
+      setE(toErrorMessage(error));
+    }
+  };
+  const load = async (accountId = id, signal?: AbortSignal) => {
     if (!accountId) return;
+    const request = ++requestRef.current;
     try {
-      setD(await api<Dash>("dashboard?accountId=" + accountId));
-      setE("");
+      const dashboard = await get(
+        "dashboard?accountId=" + accountId,
+        decodeDashboard,
+        signal,
+      );
+      if (request === requestRef.current && dashboard.accountId === accountId) {
+        setD(dashboard);
+        setE("");
+      }
     } catch (x) {
-      setE((x as Error).message);
+      if (!signal?.aborted && request === requestRef.current)
+        setE(toErrorMessage(x));
     }
   };
   useEffect(() => {
-    loadAccounts();
+    void loadAccounts();
   }, []);
   useEffect(() => {
     if (!id) return;
-    localStorage.accountId = String(id);
+    localStorage.setItem("accountId", String(id));
     setD(null);
-    load(id);
-    const t = setInterval(() => load(id), 30000);
-    return () => clearInterval(t);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let timer = 0;
+    const poll = async () => {
+      await load(id, controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(poll, 30_000);
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
   }, [id]);
   const sync = async () => {
     setRefresh("loading");
     setE("");
     try {
-      await post(`accounts/${id}/sync`);
+      await post(`accounts/${id}/sync`, decodeOK, {}, undefined, 60_000);
       await load(id);
       setRefresh("done");
-      setTimeout(() => setRefresh("idle"), 2000);
+      window.setTimeout(() => setRefresh("idle"), 2000);
     } catch (x) {
-      setE((x as Error).message);
+      setE(toErrorMessage(x));
       setRefresh("idle");
     }
   };
+  if (accounts === null)
+    return (
+      <>
+        <Header title="用量总览" />
+        {e ? (
+          <div className="panel empty">
+            <p className="error">{e}</p>
+            <button onClick={() => void loadAccounts()}>重试</button>
+          </div>
+        ) : (
+          <Splash />
+        )}
+      </>
+    );
   if (!accounts.length)
     return (
       <>
@@ -339,7 +327,20 @@ function Dashboard() {
         <div className="panel empty">尚未添加 Codex 账号</div>
       </>
     );
-  if (!d) return <Splash />;
+  if (!d)
+    return (
+      <>
+        <Header title="用量总览" />
+        {e ? (
+          <div className="panel empty">
+            <p className="error">{e}</p>
+            <button onClick={() => void load(id)}>重试</button>
+          </div>
+        ) : (
+          <Splash />
+        )}
+      </>
+    );
   return (
     <>
       <Header title="用量总览">
@@ -376,9 +377,8 @@ function Dashboard() {
         <div>
           <small>Codex Account</small>
           <b>
-            {d.displayName} · {d.account.email
-              ? maskEmail(d.account.email)
-              : "尚未连接"}
+            {d.displayName} ·{" "}
+            {d.account.email ? maskEmail(d.account.email) : "尚未连接"}
           </b>
         </div>
         <span className="badge">{planLabel(d.account.planType)}</span>
@@ -415,7 +415,9 @@ function Dashboard() {
           v={duration(d.summary.longestRunningTurnSec)}
         />
       </div>
-      <Chart data={d.usage} />
+      <Suspense fallback={<SettingsLoading />}>
+        <UsageChart data={d.usage} />
+      </Suspense>
     </>
   );
 }
@@ -468,49 +470,6 @@ const Stat = ({
     <b className={muted ? "muted" : ""}>{v}</b>
   </div>
 );
-const Chart = ({ data }: { data: Point[] }) => (
-  <div className="panel chart">
-    <div>
-      <h3>每日 Token 趋势</h3>
-    </div>
-    <ResponsiveContainer width="100%" height={280}>
-      <AreaChart data={data}>
-        <defs>
-          <linearGradient id="a" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="#5ee7f7" stopOpacity={0.35} />
-            <stop offset="1" stopColor="#5ee7f7" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid stroke="var(--grid)" vertical={false} />
-        <XAxis dataKey="date" stroke="var(--muted)" />
-        <YAxis
-          width={55}
-          tickCount={5}
-          tickFormatter={compactAxis}
-          stroke="var(--muted)"
-        />
-        <Tooltip
-          formatter={(v) => [
-            new Intl.NumberFormat("zh-CN").format(Number(v)),
-            "Tokens",
-          ]}
-          contentStyle={{
-            background: "var(--panel)",
-            border: "1px solid var(--border)",
-            borderRadius: 12,
-          }}
-        />
-        <Area
-          type="monotone"
-          dataKey="totalTokens"
-          stroke="#4dd8ed"
-          fill="url(#a)"
-          strokeWidth={2}
-        />
-      </AreaChart>
-    </ResponsiveContainer>
-  </div>
-);
 type SettingsTab = "general" | "codex" | "telegram" | "smtp";
 
 const settingsTabs: Array<{
@@ -540,7 +499,8 @@ function SettingsPage() {
     if (event.key === "ArrowRight" || event.key === "ArrowDown")
       nextIndex = (currentIndex + 1) % settingsTabs.length;
     if (event.key === "ArrowLeft" || event.key === "ArrowUp")
-      nextIndex = (currentIndex - 1 + settingsTabs.length) % settingsTabs.length;
+      nextIndex =
+        (currentIndex - 1 + settingsTabs.length) % settingsTabs.length;
     if (event.key === "Home") nextIndex = 0;
     if (event.key === "End") nextIndex = settingsTabs.length - 1;
     if (nextIndex === undefined) return;
@@ -605,25 +565,47 @@ const SettingsLoading = () => (
   </div>
 );
 function General() {
-  const [v, setV] = useState<any>(null),
-    [msg, setMsg] = useState("");
+  const [v, setV] = useState<GeneralSettings | null>(null),
+    [msg, setMsg] = useState(""),
+    [loadError, setLoadError] = useState("");
+  const { applyTheme } = useTheme();
+  const loadGeneral = async () => {
+    try {
+      setLoadError("");
+      const value = await get("settings/general", decodeGeneral);
+      setV(value);
+      applyTheme(value.theme);
+    } catch (error) {
+      setLoadError(toErrorMessage(error));
+    }
+  };
   useEffect(() => {
-    api("settings/general").then(setV);
+    void loadGeneral();
   }, []);
-  if (!v) return <SettingsLoading />;
+  if (!v)
+    return loadError ? (
+      <div className="panel wide">
+        <p className="error">{loadError}</p>
+        <button onClick={() => void loadGeneral()}>重试</button>
+      </div>
+    ) : (
+      <SettingsLoading />
+    );
   return (
     <form
       className="panel form wide"
       onSubmit={async (e) => {
         e.preventDefault();
         try {
-          await api("settings/general", {
+          const saved = await api("settings/general", decodeGeneral, {
             method: "PUT",
             body: JSON.stringify(v),
           });
+          setV(saved);
+          applyTheme(saved.theme);
           setMsg("设置已保存");
         } catch (x) {
-          setMsg((x as Error).message);
+          setMsg(toErrorMessage(x));
         }
       }}
     >
@@ -640,7 +622,11 @@ function General() {
           主题
           <select
             value={v.theme}
-            onChange={(e) => setV({ ...v, theme: e.target.value })}
+            onChange={(e) => {
+              const theme = e.target.value;
+              if (theme === "system" || theme === "dark" || theme === "light")
+                setV({ ...v, theme });
+            }}
           >
             <option value="system">跟随系统</option>
             <option value="dark">深色</option>
@@ -705,29 +691,45 @@ function CodexSettings() {
     [newKind, setNewKind] = useState<"personal" | "team">("team"),
     [busy, setBusy] = useState(false),
     [err, setErr] = useState("");
-  const load = () => api<Account[]>("accounts").then((accounts) => { setXs(accounts); return accounts; });
+  const load = async (signal?: AbortSignal) => {
+    const accounts = await get("accounts", decodeAccounts, signal);
+    setXs(accounts);
+    return accounts;
+  };
   useEffect(() => {
-    load();
+    void load().catch((error) => setErr(toErrorMessage(error)));
   }, []);
   useEffect(() => {
     if (!deviceLogin) return;
     const started = Date.now();
-    const timer = setInterval(async () => {
-      const accounts = await load();
-      const account = accounts.find((x) => x.id === deviceLogin.accountId);
-      if (!account) {
-        setDeviceLogin(null);
-        clearInterval(timer);
-        return;
+    const controller = new AbortController();
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const accounts = await load(controller.signal);
+        const account = accounts.find((x) => x.id === deviceLogin.accountId);
+        if (!account) {
+          setDeviceLogin(null);
+          return;
+        }
+        if (["matched", "mismatch"].includes(account.validationStatus)) return;
+        if (Date.now() - started >= 120_000) {
+          setErr("设备码登录检测已超时，请重新生成设备码");
+          return;
+        }
+        timer = window.setTimeout(poll, 2000);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setErr(toErrorMessage(error));
+          timer = window.setTimeout(poll, 2000);
+        }
       }
-      if (
-        ["matched", "mismatch"].includes(account.validationStatus)
-      )
-        clearInterval(timer);
-      else if (Date.now() - started >= 120000)
-        clearInterval(timer);
-    }, 2000);
-    return () => clearInterval(timer);
+    };
+    timer = window.setTimeout(poll, 2000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
   }, [deviceLogin]);
   const login = async (id: number) => {
     try {
@@ -735,12 +737,16 @@ function CodexSettings() {
       setActive(id);
       setErr("");
       setDeviceLogin(null);
-      const result = await post<Omit<DeviceLogin, "accountId">>(
+      const result = await post(
         `accounts/${id}/login/device`,
+        decodeDeviceLogin,
+        {},
+        undefined,
+        60_000,
       );
       setDeviceLogin({ accountId: id, ...result });
     } catch (q) {
-      setErr((q as Error).message);
+      setErr(toErrorMessage(q));
     } finally {
       setBusy(false);
     }
@@ -751,18 +757,22 @@ function CodexSettings() {
       setActive(0);
       setErr("");
       setDeviceLogin(null);
-      const x = await post<Account>("accounts", {
+      const x = await post("accounts", (value) => decodeAccounts([value])[0], {
         displayName: `账号 ${xs.length + 1}`,
         expectedKind: newKind,
       });
       await load();
       setActive(x.id);
-      const result = await post<Omit<DeviceLogin, "accountId">>(
+      const result = await post(
         `accounts/${x.id}/login/device`,
+        decodeDeviceLogin,
+        {},
+        undefined,
+        60_000,
       );
       setDeviceLogin({ accountId: x.id, ...result });
     } catch (q) {
-      setErr((q as Error).message);
+      setErr(toErrorMessage(q));
     } finally {
       setBusy(false);
     }
@@ -771,7 +781,9 @@ function CodexSettings() {
     <div className="codex-settings wide">
       <div className="codex-heading">
         <h2>Codex 账户与工作区</h2>
-        <p>个人订阅和 Team 工作区请分别添加为独立连接；同一邮箱可以添加多次。</p>
+        <p>
+          个人订阅和 Team 工作区请分别添加为独立连接；同一邮箱可以添加多次。
+        </p>
       </div>
       <section className="panel add-account-card">
         <div>
@@ -813,18 +825,22 @@ function CodexSettings() {
                   onBlur={async (e) => {
                     const name = e.target.value.trim();
                     if (name && name !== x.displayName) {
-                      await put(`accounts/${x.id}`, {
+                      await put(`accounts/${x.id}`, decodeOK, {
                         displayName: name,
                         expectedKind: x.expectedKind,
                       });
-                      load();
+                      void load().catch((error) =>
+                        setErr(toErrorMessage(error)),
+                      );
                     }
                   }}
                 />
                 <div className="account-meta">
                   <span>{x.email ? maskEmail(x.email) : "尚未登录"}</span>
                   <span>{planLabel(x.planType)}</span>
-                  <span className={x.validationStatus === "mismatch" ? "error" : ""}>
+                  <span
+                    className={x.validationStatus === "mismatch" ? "error" : ""}
+                  >
                     {validationLabel(x)}
                   </span>
                 </div>
@@ -842,11 +858,11 @@ function CodexSettings() {
                   aria-label="预期连接类型"
                   value={x.expectedKind}
                   onChange={async (e) => {
-                    await put(`accounts/${x.id}`, {
+                    await put(`accounts/${x.id}`, decodeOK, {
                       displayName: x.displayName,
                       expectedKind: e.target.value,
                     });
-                    load();
+                    void load().catch((error) => setErr(toErrorMessage(error)));
                   }}
                 >
                   <option value="any">不校验</option>
@@ -855,21 +871,28 @@ function CodexSettings() {
                 </select>
               </label>
               <div className="account-buttons">
-                <button className="secondary" disabled={busy} onClick={() => login(x.id)}>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => login(x.id)}
+                >
                   {busy && active === x.id ? "服务启动中…" : "设备码登录"}
                 </button>
                 <button
                   className="secondary"
                   disabled={busy}
                   onClick={async () => {
-                    if (!confirm(`确定要退出“${x.displayName}”的 Codex 账号吗？`)) return;
+                    if (
+                      !confirm(`确定要退出“${x.displayName}”的 Codex 账号吗？`)
+                    )
+                      return;
                     try {
                       setErr("");
-                      await post(`accounts/${x.id}/logout`);
+                      await post(`accounts/${x.id}/logout`, decodeOK);
                       if (deviceLogin?.accountId === x.id) setDeviceLogin(null);
                       await load();
                     } catch (q) {
-                      setErr((q as Error).message);
+                      setErr(toErrorMessage(q));
                     }
                   }}
                 >
@@ -881,16 +904,22 @@ function CodexSettings() {
                   title="删除连接"
                   aria-label={`删除“${x.displayName}”`}
                   onClick={async () => {
-                    if (!confirm(`删除“${x.displayName}”及其全部凭据和历史数据？此操作无法撤销。`)) return;
+                    if (
+                      !confirm(
+                        `删除“${x.displayName}”及其全部凭据和历史数据？此操作无法撤销。`,
+                      )
+                    )
+                      return;
                     try {
                       setErr("");
-                      await del(`accounts/${x.id}`);
+                      await del(`accounts/${x.id}`, decodeOK);
                       if (deviceLogin?.accountId === x.id) setDeviceLogin(null);
                       if (active === x.id) setActive(0);
-                      if (+localStorage.accountId === x.id) localStorage.removeItem("accountId");
+                      if (+localStorage.accountId === x.id)
+                        localStorage.removeItem("accountId");
                       await load();
                     } catch (q) {
-                      setErr((q as Error).message);
+                      setErr(toErrorMessage(q));
                     }
                   }}
                 >
@@ -902,7 +931,11 @@ function CodexSettings() {
               <div className="codebox">
                 <span>
                   在浏览器中访问{" "}
-                  <a href={deviceLogin.verificationUrl} target="_blank" rel="noreferrer">
+                  <a
+                    href={deviceLogin.verificationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {deviceLogin.verificationUrl}
                   </a>
                   ，然后输入设备码
@@ -918,27 +951,45 @@ function CodexSettings() {
   );
 }
 function Telegram() {
-  const [v, setV] = useState<any>(null),
+  const [v, setV] = useState<TelegramSettingsForm | null>(null),
     [msg, setMsg] = useState(""),
-    [code, setCode] = useState("");
+    [code, setCode] = useState(""),
+    [loadError, setLoadError] = useState("");
+  const loadTelegram = async () => {
+    try {
+      setLoadError("");
+      const value = await get("settings/telegram", decodeTelegram);
+      setV({ ...value, token: "" });
+    } catch (error) {
+      setLoadError(toErrorMessage(error));
+    }
+  };
   useEffect(() => {
-    api("settings/telegram").then(setV);
+    void loadTelegram();
   }, []);
-  if (!v) return <SettingsLoading />;
+  if (!v)
+    return loadError ? (
+      <div className="panel wide">
+        <p className="error">{loadError}</p>
+        <button onClick={() => void loadTelegram()}>重试</button>
+      </div>
+    ) : (
+      <SettingsLoading />
+    );
   return (
     <form
       className="panel form wide"
       onSubmit={async (e) => {
         e.preventDefault();
         try {
-          const x: any = await api("settings/telegram", {
+          const x = await api("settings/telegram", decodeTelegram, {
             method: "PUT",
             body: JSON.stringify(v),
           });
-          setV(x);
+          setV({ ...x, token: "" });
           setMsg("Bot 已验证并保存");
         } catch (x) {
-          setMsg((x as Error).message);
+          setMsg(toErrorMessage(x));
         }
       }}
     >
@@ -978,8 +1029,12 @@ function Telegram() {
           type="button"
           className="secondary"
           onClick={async () => {
-            const x: any = await post("settings/telegram/bind");
-            setCode(x.code);
+            try {
+              const x = await post("settings/telegram/bind", decodeCode);
+              setCode(x.code);
+            } catch (error) {
+              setMsg(toErrorMessage(error));
+            }
           }}
         >
           生成绑定码
@@ -989,10 +1044,10 @@ function Telegram() {
           className="secondary"
           onClick={async () => {
             try {
-              await post("settings/telegram/test");
+              await post("settings/telegram/test", decodeOK);
               setMsg("测试消息已发送");
             } catch (x) {
-              setMsg((x as Error).message);
+              setMsg(toErrorMessage(x));
             }
           }}
         >
@@ -1010,21 +1065,41 @@ function Telegram() {
   );
 }
 function SMTP() {
-  const [v, setV] = useState<any>(null),
-    [msg, setMsg] = useState("");
+  const [v, setV] = useState<SMTPSettingsForm | null>(null),
+    [msg, setMsg] = useState(""),
+    [loadError, setLoadError] = useState("");
+  const loadSMTP = async () => {
+    try {
+      setLoadError("");
+      const value = await get("settings/smtp", decodeSMTP);
+      setV({ ...value, password: "" });
+    } catch (error) {
+      setLoadError(toErrorMessage(error));
+    }
+  };
   useEffect(() => {
-    api("settings/smtp").then(setV);
+    void loadSMTP();
   }, []);
-  if (!v) return <SettingsLoading />;
+  if (!v)
+    return loadError ? (
+      <div className="panel wide">
+        <p className="error">{loadError}</p>
+        <button onClick={() => void loadSMTP()}>重试</button>
+      </div>
+    ) : (
+      <SettingsLoading />
+    );
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      setV(
-        await api("settings/smtp", { method: "PUT", body: JSON.stringify(v) }),
-      );
+      const saved = await api("settings/smtp", decodeSMTP, {
+        method: "PUT",
+        body: JSON.stringify(v),
+      });
+      setV({ ...saved, password: "" });
       setMsg("SMTP 设置已保存");
     } catch (x) {
-      setMsg((x as Error).message);
+      setMsg(toErrorMessage(x));
     }
   };
   return (
@@ -1067,7 +1142,15 @@ function SMTP() {
           加密
           <select
             value={v.security}
-            onChange={(e) => setV({ ...v, security: e.target.value })}
+            onChange={(e) => {
+              const security = e.target.value;
+              if (
+                security === "starttls" ||
+                security === "tls" ||
+                security === "none"
+              )
+                setV({ ...v, security });
+            }}
           >
             <option value="starttls">STARTTLS</option>
             <option value="tls">隐式 TLS</option>
@@ -1113,10 +1196,10 @@ function SMTP() {
           className="secondary"
           onClick={async () => {
             try {
-              await post("settings/smtp/test");
+              await post("settings/smtp/test", decodeOK);
               setMsg("测试邮件已发送");
             } catch (x) {
-              setMsg((x as Error).message);
+              setMsg(toErrorMessage(x));
             }
           }}
         >
@@ -1146,19 +1229,14 @@ function Header({
     </header>
   );
 }
-const num = (v?: number) =>
+const num = (v?: number | null) =>
   v == null
     ? "暂无"
     : new Intl.NumberFormat("zh-CN", {
         notation: "compact",
         maximumFractionDigits: 1,
       }).format(v);
-const compactAxis = (v: number) =>
-  new Intl.NumberFormat("en", {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(v);
-const duration = (v?: number) =>
+const duration = (v?: number | null) =>
   v == null
     ? "暂无"
     : v < 60
@@ -1182,22 +1260,33 @@ const maskEmail = (email: string) => {
     )
     .join(".")}`;
 };
-const planLabel = (plan?: string) => {
+const planLabel = (plan?: string | null) => {
   if (!plan) return "未识别套餐";
   const labels: Record<string, string> = {
-    free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: "Pro Lite",
-    team: "Team", business: "Business",
+    free: "Free",
+    go: "Go",
+    plus: "Plus",
+    pro: "Pro",
+    prolite: "Pro Lite",
+    team: "Team",
+    business: "Business",
     self_serve_business_prolite: "Business Pro Lite",
     self_serve_business_usage_based: "Business（按量）",
-    enterprise: "Enterprise", edu: "Edu",
+    enterprise: "Enterprise",
+    edu: "Edu",
   };
   return labels[plan.toLowerCase()] || plan;
 };
 const validationLabel = (account: Account) => {
   if (account.expectedKind === "any") return "未启用套餐类型校验";
-  if (account.validationStatus === "pending") return `等待验证${account.expectedKind === "team" ? " Team / Business" : "个人订阅"}`;
-  if (account.validationStatus === "matched") return account.actualKind === "team" ? "已连接 Team / Business 工作区" : "已连接个人订阅";
-  if (account.validationStatus === "mismatch") return `类型不匹配：实际为 ${planLabel(account.planType)}，请退出后重新授权`;
+  if (account.validationStatus === "pending")
+    return `等待验证${account.expectedKind === "team" ? " Team / Business" : "个人订阅"}`;
+  if (account.validationStatus === "matched")
+    return account.actualKind === "team"
+      ? "已连接 Team / Business 工作区"
+      : "已连接个人订阅";
+  if (account.validationStatus === "mismatch")
+    return `类型不匹配：实际为 ${planLabel(account.planType)}，请退出后重新授权`;
   return `无法验证工作区类型：${planLabel(account.planType)}`;
 };
 const relative = (ts: number) => {
@@ -1208,8 +1297,14 @@ const relative = (ts: number) => {
     m = Math.floor((s % 3600) / 60);
   return d ? `${d} 天 ${h} 小时后` : h ? `${h} 小时 ${m} 分后` : `${m} 分钟后`;
 };
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (!root) throw new Error("缺少 #root 挂载节点");
+createRoot(root).render(
   <React.StrictMode>
-    <App />
+    <AuthProvider>
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>
+    </AuthProvider>
   </React.StrictMode>,
 );

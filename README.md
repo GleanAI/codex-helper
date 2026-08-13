@@ -219,6 +219,8 @@ npm install
 npm run dev
 ```
 
+前端提交前检查（格式、lint、类型、生产构建、bundle 门禁和 Vitest）使用 `npm run check`；浏览器回归测试使用 `npm run test:e2e`。维护者应按开发指南在固定版本容器中执行这些命令。
+
 启动后端：
 
 ```bash

@@ -1,1 +1,34 @@
-{"name":"codex-helper-ui","private":true,"version":"0.1.0","type":"module","scripts":{"dev":"vite","build":"tsc -b && vite build","test":"vitest run --passWithNoTests --exclude 'tests/**'","test:e2e":"playwright test"},"dependencies":{"@vitejs/plugin-react":"latest","lucide-react":"0.539.0","react":"19.2.7","react-dom":"19.2.7","react-router-dom":"7.18.2","recharts":"3.1.2","typescript":"7.0.2","vite":"8.2.1"},"devDependencies":{"@playwright/test":"^1.62.1","@types/react":"19.1.10","@types/react-dom":"19.1.7","vitest":"3.2.4"}}
+{
+  "name": "codex-helper-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && node scripts/check-bundle.mjs",
+    "lint": "oxlint --deny-warnings src tests",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run --exclude 'tests/**'",
+    "test:e2e": "playwright test",
+    "check": "npm run format:check && npm run lint && npm run build && npm test"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "0.539.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router-dom": "7.18.2",
+    "recharts": "3.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "oxlint": "1.78.0",
+    "prettier": "3.9.0",
+    "vitest": "3.2.7"
+  }
+}
