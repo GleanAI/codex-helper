@@ -1026,28 +1026,7 @@ function Telegram() {
           }
         />
       </label>
-      <div className="checks">
-        <label>
-          <input
-            type="checkbox"
-            checked={v.enabled}
-            onChange={(e) => setV({ ...v, enabled: e.target.checked })}
-          />
-          启用提醒
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={v.menuEnabled}
-            onChange={(e) => setV({ ...v, menuEnabled: e.target.checked })}
-          />
-          启用查询菜单
-        </label>
-      </div>
-      <p className="hint telegram-switch-hint">
-        “启用提醒”只控制自动额度提醒，关闭后仍可发送测试消息；“启用查询菜单”关闭后将停止查询并移除
-        Telegram 键盘。
-      </p>
+      <p className="hint">Bot 绑定后会自动启用额度提醒和查询菜单。</p>
       <button>验证并保存</button>
       <div className="actions">
         <button
@@ -1085,7 +1064,7 @@ function Telegram() {
           onClick={async () => {
             if (
               !confirm(
-                "确定要解除 Telegram Bot 绑定吗？这会删除 Bot Token、Chat ID、开关和未使用的绑定码。",
+                "确定要解除 Telegram Bot 绑定吗？这会删除 Bot Token、Chat ID 和未使用的绑定码。",
               )
             )
               return;

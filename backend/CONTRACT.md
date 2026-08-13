@@ -88,11 +88,11 @@
 
 ### Telegram
 
-- `GET /api/v1/settings/telegram` 返回 `{chatId,enabled,menuEnabled,configured,botName?}`，不返回 Token 明文。
-- `PUT`（以及兼容保留的其他非 `GET`、非 `DELETE` 方法）接受 `{token,chatId,enabled,menuEnabled}`，Token 留空时保留旧值，保存前调用 Bot API `getMe` 验证。失败返回 400 或 502。菜单状态变化时响应可能包含 `warning`，表示设置已保存但 Telegram 客户端键盘同步失败。
+- `GET /api/v1/settings/telegram` 返回 `{chatId,enabled,menuEnabled,configured,botName?}`，不返回 Token 明文。`enabled` 和 `menuEnabled` 是兼容字段：`chatId != 0` 时两者始终为 `true`，未绑定时为 `false`。
+- `PUT`（以及兼容保留的其他非 `GET`、非 `DELETE` 方法）接受 `{token,chatId,enabled,menuEnabled}`，Token 留空时保留旧值，保存前调用 Bot API `getMe` 验证。失败返回 400 或 502。兼容字段 `enabled` 和 `menuEnabled` 的请求值不能关闭已绑定 Bot 的提醒或查询菜单。
 - `POST /api/v1/settings/telegram/bind` 返回六位 `{code}`，绑定码有效十分钟。
 - `POST /api/v1/settings/telegram/test` 向已绑定会话发送测试消息；未绑定或发送失败返回 502。
-- `DELETE /api/v1/settings/telegram` 原子删除 Bot Token、Chat ID、Bot 信息、开关和绑定码，并重置 update offset；成功返回 `{ok:true,warning?}`。删除后移除 Telegram 客户端键盘失败只产生 `warning`，不恢复已删除的秘密。
+- `DELETE /api/v1/settings/telegram` 原子删除 Bot Token、Chat ID、Bot 信息、兼容开关值和绑定码，并重置 update offset；成功返回 `{ok:true,warning?}`。删除后移除 Telegram 客户端键盘失败只产生 `warning`，不恢复已删除的秘密。
 
 ## 6. 维护接口
 

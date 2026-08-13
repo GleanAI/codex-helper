@@ -478,11 +478,6 @@ header p {
 .checks input {
   width: auto;
 }
-.telegram-switch-hint {
-  margin: -8px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
 .actions {
   display: flex;
   gap: 10px;

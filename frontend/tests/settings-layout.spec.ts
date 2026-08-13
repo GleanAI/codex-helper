@@ -139,7 +139,7 @@ test("shows the GitHub link after login", async ({ page }) => {
   );
 });
 
-test("saves disabled Telegram switches and removes the configuration", async ({
+test("automatically enables Telegram features and removes the configuration", async ({
   page,
 }) => {
   let savedBody: Record<string, unknown> | undefined;
@@ -162,11 +162,14 @@ test("saves disabled Telegram switches and removes the configuration", async ({
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto("/settings");
   await page.getByRole("tab", { name: "Telegram" }).click();
-  await page.getByLabel("启用提醒").uncheck();
-  await page.getByLabel("启用查询菜单").uncheck();
+  await expect(page.getByLabel("启用提醒")).toHaveCount(0);
+  await expect(page.getByLabel("启用查询菜单")).toHaveCount(0);
+  await expect(
+    page.getByText("Bot 绑定后会自动启用额度提醒和查询菜单。"),
+  ).toBeVisible();
   await page.getByRole("button", { name: "验证并保存" }).click();
-  await expect.poll(() => savedBody?.enabled).toBe(false);
-  expect(savedBody?.menuEnabled).toBe(false);
+  await expect.poll(() => savedBody?.enabled).toBe(true);
+  expect(savedBody?.menuEnabled).toBe(true);
 
   await page.getByRole("button", { name: "解除绑定" }).click();
   await expect.poll(() => deleted).toBe(true);

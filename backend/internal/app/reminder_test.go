@@ -186,7 +186,7 @@ func TestTelegramDeleteWaitsForInFlightSaveAndRemainsFinal(t *testing.T) {
 	}
 }
 
-func TestDisabledTelegramSkipsAutomaticReminderButAllowsManualTest(t *testing.T) {
+func TestBoundTelegramIgnoresLegacyDisabledFlags(t *testing.T) {
 	a := newReminderTestApp(t)
 	enc, err := a.vault.Encrypt("secret-token")
 	if err != nil {
@@ -212,14 +212,144 @@ func TestDisabledTelegramSkipsAutomaticReminderButAllowsManualTest(t *testing.T)
 		return nil
 	}
 	a.sendPendingReminders(now)
-	if calls != 0 {
-		t.Fatalf("automatic Telegram calls = %d; want 0", calls)
+	if calls != 1 {
+		t.Fatalf("automatic Telegram calls = %d; want 1", calls)
 	}
 	recorder := httptest.NewRecorder()
 	a.telegramTest(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/settings/telegram/test", nil))
-	if recorder.Code != http.StatusOK || calls != 1 {
+	if recorder.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("manual test status = %d calls = %d body = %s", recorder.Code, calls, recorder.Body.String())
 	}
+	settings := a.telegramSettings()
+	if !settings.Enabled || !settings.MenuEnabled {
+		t.Fatalf("effective settings = %#v", settings)
+	}
+}
+
+func TestLegacyBoundTelegramRestoresMenuOnce(t *testing.T) {
+	a := newReminderTestApp(t)
+	enc, err := a.vault.Encrypt("secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.Set("telegram_token", enc); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.SetJSON("telegram", TelegramSettings{ChatID: 123, Enabled: false, MenuEnabled: false, Configured: true}); err != nil {
+		t.Fatal(err)
+	}
+	original := tgCall
+	t.Cleanup(func() { tgCall = original })
+	calls := 0
+	var sent map[string]any
+	tgCall = func(_ string, method string, params any, _ any) error {
+		if method != "sendMessage" {
+			t.Fatalf("method = %q", method)
+		}
+		calls++
+		body, marshalErr := json.Marshal(params)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		return json.Unmarshal(body, &sent)
+	}
+
+	a.syncLegacyTelegramMenu()
+	a.syncLegacyTelegramMenu()
+	if calls != 1 {
+		t.Fatalf("menu restore calls = %d; want 1", calls)
+	}
+	replyMarkup, ok := sent["reply_markup"].(map[string]any)
+	if !ok || replyMarkup["keyboard"] == nil {
+		t.Fatalf("send params = %#v", sent)
+	}
+	var stored TelegramSettings
+	if !a.store.GetJSON("telegram", &stored) || !stored.Enabled || !stored.MenuEnabled {
+		t.Fatalf("stored settings = %#v", stored)
+	}
+}
+
+func TestTelegramSaveCannotDisableFeaturesForBoundChat(t *testing.T) {
+	a := newReminderTestApp(t)
+	original := tgCall
+	t.Cleanup(func() { tgCall = original })
+	tgCall = func(_ string, method string, _ any, out any) error {
+		if method == "sendMessage" {
+			return nil
+		}
+		if method == "getMe" {
+			return json.Unmarshal([]byte(`{"ok":true,"result":{"first_name":"Test","username":"test_bot"}}`), out)
+		}
+		t.Fatalf("method = %q", method)
+		return nil
+	}
+
+	body := bytes.NewBufferString(`{"token":"token","chatId":123,"enabled":false,"menuEnabled":false}`)
+	recorder := httptest.NewRecorder()
+	a.telegramAPI(recorder, httptest.NewRequest(http.MethodPut, "/api/v1/settings/telegram", body))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response TelegramSettings
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Enabled || !response.MenuEnabled {
+		t.Fatalf("response = %#v", response)
+	}
+	var stored TelegramSettings
+	if !a.store.GetJSON("telegram", &stored) || !stored.Enabled || !stored.MenuEnabled {
+		t.Fatalf("stored settings = %#v", stored)
+	}
+}
+
+func TestTelegramBindEnablesFeaturesAndSendsMenu(t *testing.T) {
+	a := newReminderTestApp(t)
+	enc, err := a.vault.Encrypt("secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.Set("telegram_token", enc); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.SetJSON("telegram", TelegramSettings{Configured: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.SetJSON("telegram_bind", map[string]any{"code": "123456", "expires": time.Now().Add(time.Minute).Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	original := tgCall
+	t.Cleanup(func() { tgCall = original })
+	var sent map[string]any
+	tgCall = func(_ string, method string, params any, _ any) error {
+		if method != "sendMessage" {
+			t.Fatalf("method = %q", method)
+		}
+		body, marshalErr := json.Marshal(params)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		return json.Unmarshal(body, &sent)
+	}
+
+	a.handleTG(a.telegramSecretForTest(t), 456, "/bind 123456")
+	settings := a.telegramSettings()
+	if settings.ChatID != 456 || !settings.Enabled || !settings.MenuEnabled {
+		t.Fatalf("settings = %#v", settings)
+	}
+	replyMarkup, ok := sent["reply_markup"].(map[string]any)
+	if !ok || replyMarkup["keyboard"] == nil {
+		t.Fatalf("send params = %#v", sent)
+	}
+}
+
+func (a *App) telegramSecretForTest(t *testing.T) TelegramSettings {
+	t.Helper()
+	settings, err := a.telegramSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return settings
 }
 
 func reminderDashboard(fetchedAt int64, used float64, resetsAt int64) Dashboard {

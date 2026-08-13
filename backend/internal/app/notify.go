@@ -170,6 +170,8 @@ func (a *App) telegramSettings() TelegramSettings {
 			t.Configured = token != ""
 		}
 	}
+	t.Enabled = t.ChatID != 0
+	t.MenuEnabled = t.ChatID != 0
 	return t
 }
 func (a *App) telegramSecret() (TelegramSettings, error) {
@@ -204,6 +206,8 @@ func (a *App) telegramAPI(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 400, map[string]string{"error": "Bot Token 必填"})
 		return
 	}
+	in.Enabled = in.ChatID != 0
+	in.MenuEnabled = in.ChatID != 0
 	var me struct {
 		OK     bool `json:"ok"`
 		Result struct {
@@ -309,7 +313,33 @@ func tgSend(t TelegramSettings, text string) error {
 	}
 	return tgCall(t.Token, "sendMessage", params, &out)
 }
+func (a *App) syncLegacyTelegramMenu() {
+	a.telegramMu.Lock()
+	defer a.telegramMu.Unlock()
+	var t TelegramSettings
+	if !a.store.GetJSON("telegram", &t) || t.ChatID == 0 || t.MenuEnabled {
+		return
+	}
+	enc, ok := a.store.Get("telegram_token")
+	if !ok {
+		return
+	}
+	token, err := a.vault.Decrypt(enc)
+	if err != nil || token == "" {
+		return
+	}
+	t.Token = token
+	t.Configured = true
+	t.Enabled = true
+	t.MenuEnabled = true
+	if tgSend(t, "✅ <b>Codex 查询菜单已自动启用</b>\n\n现在可以使用菜单查询额度信息。") != nil {
+		return
+	}
+	t.Token = ""
+	_ = a.store.SetJSON("telegram", t)
+}
 func (a *App) telegramLoop() {
+	a.syncLegacyTelegramMenu()
 	for {
 		select {
 		case <-a.ctx.Done():
@@ -367,16 +397,14 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 		}
 		if a.store.GetJSON("telegram_bind", &b) && b.Expires > time.Now().Unix() && strings.TrimSpace(strings.TrimPrefix(text, "/bind ")) == b.Code {
 			t.ChatID = chat
+			t.Enabled = true
+			t.MenuEnabled = true
 			safe := t
 			safe.Token = ""
 			_ = a.store.SetJSON("telegram", safe)
 			_ = a.store.Set("telegram_bind", "{}")
 			t.ChatID = chat
-			message := "✅ <b>绑定成功</b>\n\nCodex 额度提醒将发送到此会话。"
-			if t.MenuEnabled {
-				message = "✅ <b>绑定成功</b>\n\n现在可以使用菜单查询 Codex 额度信息。"
-			}
-			_ = tgSend(t, message)
+			_ = tgSend(t, "✅ <b>绑定成功</b>\n\n额度提醒和 Codex 额度查询菜单已启用。")
 		}
 		return
 	}
