@@ -18,7 +18,16 @@ import (
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	if p == "system/status" {
-		jsonOut(w, 200, map[string]any{"initialized": a.store.Initialized(), "version": "0.1.0", "appServer": a.codex.Connected()})
+		connected := false
+		a.mu.RLock()
+		for _, rt := range a.runtimes {
+			if rt.client.Connected() {
+				connected = true
+				break
+			}
+		}
+		a.mu.RUnlock()
+		jsonOut(w, 200, map[string]any{"initialized": a.store.Initialized(), "version": "0.2.0", "appServer": connected})
 		return
 	}
 	if p == "setup" && r.Method == "POST" {
@@ -39,13 +48,54 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, map[string]string{"username": username})
 	case p == "auth/logout" && r.Method == "POST":
 		a.logout(w, r)
+	case p == "accounts" && r.Method == "GET":
+		x, e := a.store.Accounts()
+		if e != nil {
+			jsonOut(w, 500, map[string]string{"error": e.Error()})
+		} else {
+			jsonOut(w, 200, x)
+		}
+	case p == "accounts" && r.Method == "POST":
+		var in struct {
+			DisplayName string `json:"displayName"`
+		}
+		if decode(r, &in) != nil {
+			jsonOut(w, 400, map[string]string{"error": "请求格式错误"})
+			break
+		}
+		in.DisplayName = strings.TrimSpace(in.DisplayName)
+		if in.DisplayName == "" {
+			in.DisplayName = "新账号"
+		}
+		x, e := a.store.CreateAccount(in.DisplayName)
+		if e == nil {
+			a.addRuntime(x.ID)
+			jsonOut(w, 201, x)
+		} else {
+			jsonOut(w, 500, map[string]string{"error": e.Error()})
+		}
+	case strings.HasPrefix(p, "accounts/"):
+		a.accountAPI(w, r, p)
 	case p == "dashboard":
-		a.mu.RLock()
-		d := a.dash
-		a.mu.RUnlock()
-		jsonOut(w, 200, d)
+		id, _ := strconv.ParseInt(r.URL.Query().Get("accountId"), 10, 64)
+		if id == 0 {
+			id = 1
+		}
+		rt := a.runtime(id)
+		if rt == nil {
+			jsonOut(w, 404, map[string]string{"error": "账号不存在"})
+		} else {
+			rt.syncing.Lock()
+			d := rt.dash
+			rt.syncing.Unlock()
+			jsonOut(w, 200, d)
+		}
 	case p == "sync" && r.Method == "POST":
-		e := a.sync(r.Context())
+		id, _ := strconv.ParseInt(r.URL.Query().Get("accountId"), 10, 64)
+		if id == 0 {
+			id = 1
+		}
+		e := a.syncAccount(r.Context(), id)
 		if e != nil {
 			jsonOut(w, 502, map[string]string{"error": e.Error()})
 		} else {
@@ -65,16 +115,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		code := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 		_ = a.store.SetJSON("telegram_bind", map[string]any{"code": code, "expires": time.Now().Add(10 * time.Minute).Unix()})
 		jsonOut(w, 200, map[string]string{"code": code})
-	case p == "codex/login/device" && r.Method == "POST":
-		a.deviceLogin(w, r)
-	case p == "codex/logout" && r.Method == "POST":
-		var out any
-		e := a.codex.Call(r.Context(), "account/logout", map[string]any{}, &out)
-		if e != nil {
-			jsonOut(w, 502, map[string]string{"error": e.Error()})
-		} else {
-			jsonOut(w, 200, map[string]bool{"ok": true})
-		}
 	case p == "maintenance/cleanup" && r.Method == "POST":
 		n, e := a.store.Cleanup(a.general().RetentionDays)
 		if e != nil {
@@ -98,6 +138,78 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, path)
 	default:
 		jsonOut(w, 404, map[string]string{"error": "接口不存在"})
+	}
+}
+
+func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
+	parts := strings.Split(p, "/")
+	if len(parts) < 2 {
+		jsonOut(w, 404, map[string]string{"error": "接口不存在"})
+		return
+	}
+	id, e := strconv.ParseInt(parts[1], 10, 64)
+	if e != nil {
+		jsonOut(w, 400, map[string]string{"error": "账号 ID 无效"})
+		return
+	}
+	rt := a.runtime(id)
+	if rt == nil {
+		jsonOut(w, 404, map[string]string{"error": "账号不存在"})
+		return
+	}
+	action := ""
+	if len(parts) > 2 {
+		action = parts[2]
+	}
+	switch {
+	case action == "" && r.Method == "PUT":
+		var in struct {
+			DisplayName string `json:"displayName"`
+		}
+		if decode(r, &in) != nil || strings.TrimSpace(in.DisplayName) == "" {
+			jsonOut(w, 400, map[string]string{"error": "名称不能为空"})
+			return
+		}
+		e = a.store.RenameAccount(id, strings.TrimSpace(in.DisplayName))
+		if e == nil {
+			jsonOut(w, 200, map[string]bool{"ok": true})
+		}
+	case action == "" && r.Method == "DELETE":
+		a.mu.Lock()
+		delete(a.runtimes, id)
+		a.mu.Unlock()
+		_ = rt.client.Close()
+		e = a.store.DeleteAccount(id)
+		if e == nil {
+			dir := filepath.Join(a.dataDir, "accounts", strconv.FormatInt(id, 10))
+			if id == 1 {
+				dir = filepath.Join(a.dataDir, "codex")
+			}
+			e = os.RemoveAll(dir)
+		}
+		if e == nil {
+			jsonOut(w, 200, map[string]bool{"ok": true})
+		}
+	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "POST":
+		a.deviceLogin(w, r, id)
+	case action == "logout" && r.Method == "POST":
+		var out any
+		e = rt.client.Call(r.Context(), "account/logout", map[string]any{}, &out)
+		if e == nil {
+			_ = a.store.UpdateAccount(id, nil, nil, false)
+			jsonOut(w, 200, map[string]bool{"ok": true})
+		}
+	case action == "sync" && r.Method == "POST":
+		e = a.syncAccount(r.Context(), id)
+		if e == nil {
+			jsonOut(w, 200, map[string]bool{"ok": true})
+		}
+	default:
+		jsonOut(w, 404, map[string]string{"error": "接口不存在"})
+		return
+	}
+	if e != nil {
+		jsonOut(w, 502, map[string]string{"error": e.Error()})
 	}
 }
 
@@ -211,9 +323,14 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.SetJSON("general", g)
 	jsonOut(w, 200, g)
 }
-func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request) {
+func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
 	var out map[string]any
-	e := a.codex.Call(r.Context(), "account/login/start", map[string]any{"type": "chatgptDeviceCode"}, &out)
+	rt := a.runtime(id)
+	if !rt.client.Connected() {
+		jsonOut(w, 503, map[string]string{"error": "该账号服务正在启动，请稍后重试"})
+		return
+	}
+	e := rt.client.Call(r.Context(), "account/login/start", map[string]any{"type": "chatgptDeviceCode"}, &out)
 	if e != nil {
 		jsonOut(w, 502, map[string]string{"error": e.Error()})
 		return
@@ -221,8 +338,14 @@ func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, out)
 }
 
-func (a *App) sync(ctx context.Context) error {
-	if !a.codex.Connected() {
+func (a *App) syncAccount(ctx context.Context, id int64) error {
+	rt := a.runtime(id)
+	if rt == nil {
+		return fmt.Errorf("账号不存在")
+	}
+	rt.syncing.Lock()
+	defer rt.syncing.Unlock()
+	if !rt.client.Connected() {
 		return fmt.Errorf("app-server 未连接")
 	}
 	ctx, c := context.WithTimeout(ctx, 20*time.Second)
@@ -234,10 +357,18 @@ func (a *App) sync(ctx context.Context) error {
 			PlanType *string `json:"planType"`
 		} `json:"account"`
 	}
-	if e := a.codex.Call(ctx, "account/read", map[string]any{"refreshToken": false}, &ar); e != nil {
+	if e := rt.client.Call(ctx, "account/read", map[string]any{"refreshToken": false}, &ar); e != nil {
 		return e
 	}
-	d := Dashboard{FetchedAt: time.Now().Unix(), Account: AccountView{Connected: ar.Account != nil}, Limits: []LimitBucket{}, Usage: []UsagePoint{}}
+	name := "账号"
+	accounts, _ := a.store.Accounts()
+	for _, x := range accounts {
+		if x.ID == id {
+			name = x.DisplayName
+			break
+		}
+	}
+	d := Dashboard{AccountID: id, DisplayName: name, FetchedAt: time.Now().Unix(), Account: AccountView{Connected: ar.Account != nil}, Limits: []LimitBucket{}, Usage: []UsagePoint{}}
 	if ar.Account != nil {
 		d.Account.Email = ar.Account.Email
 		d.Account.PlanType = ar.Account.PlanType
@@ -247,7 +378,7 @@ func (a *App) sync(ctx context.Context) error {
 		RateLimits *rawLimit           `json:"rateLimits"`
 		By         map[string]rawLimit `json:"rateLimitsByLimitId"`
 	}
-	if e := a.codex.Call(ctx, "account/rateLimits/read", map[string]any{}, &lr); e == nil {
+	if e := rt.client.Call(ctx, "account/rateLimits/read", map[string]any{}, &lr); e == nil {
 		if len(lr.By) > 0 {
 			for _, x := range lr.By {
 				d.Limits = append(d.Limits, flattenLimit(x)...)
@@ -263,20 +394,19 @@ func (a *App) sync(ctx context.Context) error {
 			Tokens    int64  `json:"tokens"`
 		} `json:"dailyUsageBuckets"`
 	}
-	if e := a.codex.Call(ctx, "account/usage/read", map[string]any{}, &ur); e == nil {
+	if e := rt.client.Call(ctx, "account/usage/read", map[string]any{}, &ur); e == nil {
 		d.Summary = ur.Summary
 		for _, x := range ur.Daily {
 			p := UsagePoint{Date: x.StartDate, TotalTokens: x.Tokens}
 			d.Usage = append(d.Usage, p)
-			_, _ = a.store.DB.Exec("INSERT INTO daily_usage(date,total_tokens,fetched_at) VALUES(?,?,?) ON CONFLICT(date) DO UPDATE SET total_tokens=excluded.total_tokens,fetched_at=excluded.fetched_at", x.StartDate, x.Tokens, d.FetchedAt)
+			_, _ = a.store.DB.Exec("INSERT INTO daily_usage(account_id,date,total_tokens,fetched_at) VALUES(?,?,?,?) ON CONFLICT(account_id,date) DO UPDATE SET total_tokens=excluded.total_tokens,fetched_at=excluded.fetched_at", id, x.StartDate, x.Tokens, d.FetchedAt)
 		}
 	}
 	for _, x := range d.Limits {
-		_, _ = a.store.DB.Exec("INSERT INTO limit_snapshots(limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at) VALUES(?,?,?,?,?,?)", x.LimitID, x.WindowType, x.UsedPercent, x.WindowDurationMinutes, x.ResetsAt, d.FetchedAt)
+		_, _ = a.store.DB.Exec("INSERT INTO limit_snapshots(limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at,account_id) VALUES(?,?,?,?,?,?,?)", x.LimitID, x.WindowType, x.UsedPercent, x.WindowDurationMinutes, x.ResetsAt, d.FetchedAt, id)
 	}
-	a.mu.Lock()
-	a.dash = d
-	a.mu.Unlock()
+	rt.dash = d
+	_ = a.store.UpdateAccount(id, d.Account.Email, d.Account.PlanType, d.Account.Connected)
 	return nil
 }
 

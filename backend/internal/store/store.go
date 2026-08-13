@@ -42,7 +42,138 @@ CREATE TABLE IF NOT EXISTS notifications (dedupe_key TEXT PRIMARY KEY, channel T
 CREATE TABLE IF NOT EXISTS telegram_updates (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.migrateAccounts()
+}
+
+func (s *Store) migrateAccounts() error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS accounts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		display_name TEXT NOT NULL,
+		email TEXT,
+		plan_type TEXT,
+		connected INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	var count int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		if _, err = tx.Exec("INSERT INTO accounts(id,display_name,created_at,updated_at) VALUES(1,'默认账号',?,?)", time.Now().Unix(), time.Now().Unix()); err != nil {
+			return err
+		}
+	}
+	for _, table := range []string{"daily_usage", "limit_snapshots"} {
+		var found int
+		rows, qerr := tx.Query("PRAGMA table_info(" + table + ")")
+		if qerr != nil {
+			return qerr
+		}
+		for rows.Next() {
+			var cid, notnull, pk int
+			var name, typ string
+			var def any
+			_ = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk)
+			if name == "account_id" {
+				found = 1
+			}
+		}
+		rows.Close()
+		if found == 0 {
+			if table == "daily_usage" {
+				_, err = tx.Exec(`ALTER TABLE daily_usage RENAME TO daily_usage_legacy;
+				CREATE TABLE daily_usage (account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,date TEXT NOT NULL,total_tokens INTEGER NOT NULL,fetched_at INTEGER NOT NULL,PRIMARY KEY(account_id,date));
+				INSERT INTO daily_usage SELECT 1,date,total_tokens,fetched_at FROM daily_usage_legacy;
+				DROP TABLE daily_usage_legacy;`)
+			} else {
+				_, err = tx.Exec(`ALTER TABLE limit_snapshots RENAME TO limit_snapshots_legacy;
+				CREATE TABLE limit_snapshots (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+					limit_id TEXT NOT NULL,
+					window_type TEXT NOT NULL,
+					used_percent REAL NOT NULL,
+					duration_mins INTEGER NOT NULL,
+					resets_at INTEGER NOT NULL,
+					fetched_at INTEGER NOT NULL
+				);
+				INSERT INTO limit_snapshots(id,account_id,limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at)
+					SELECT id,1,limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at FROM limit_snapshots_legacy;
+				DROP TABLE limit_snapshots_legacy;
+				CREATE INDEX idx_limits_time ON limit_snapshots(fetched_at);`)
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+type Account struct {
+	ID          int64   `json:"id"`
+	DisplayName string  `json:"displayName"`
+	Email       *string `json:"email"`
+	PlanType    *string `json:"planType"`
+	Connected   bool    `json:"connected"`
+	CreatedAt   int64   `json:"createdAt"`
+	UpdatedAt   int64   `json:"updatedAt"`
+}
+
+func (s *Store) Accounts() ([]Account, error) {
+	rows, e := s.DB.Query("SELECT id,display_name,email,plan_type,connected,created_at,updated_at FROM accounts ORDER BY id")
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []Account{}
+	for rows.Next() {
+		var a Account
+		if e = rows.Scan(&a.ID, &a.DisplayName, &a.Email, &a.PlanType, &a.Connected, &a.CreatedAt, &a.UpdatedAt); e != nil {
+			return nil, e
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+func (s *Store) CreateAccount(name string) (Account, error) {
+	now := time.Now().Unix()
+	r, e := s.DB.Exec("INSERT INTO accounts(display_name,created_at,updated_at) VALUES(?,?,?)", name, now, now)
+	if e != nil {
+		return Account{}, e
+	}
+	id, _ := r.LastInsertId()
+	return Account{ID: id, DisplayName: name, CreatedAt: now, UpdatedAt: now}, nil
+}
+func (s *Store) RenameAccount(id int64, name string) error {
+	r, e := s.DB.Exec("UPDATE accounts SET display_name=?,updated_at=? WHERE id=?", name, time.Now().Unix(), id)
+	if e != nil {
+		return e
+	}
+	n, _ := r.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (s *Store) UpdateAccount(id int64, email, plan *string, connected bool) error {
+	_, e := s.DB.Exec("UPDATE accounts SET email=?,plan_type=?,connected=?,updated_at=? WHERE id=?", email, plan, connected, time.Now().Unix(), id)
+	return e
+}
+func (s *Store) DeleteAccount(id int64) error {
+	_, e := s.DB.Exec("DELETE FROM accounts WHERE id=?", id)
+	return e
 }
 
 func (s *Store) Get(key string) (string, bool) {

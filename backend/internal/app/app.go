@@ -29,13 +29,17 @@ type App struct {
 	dataDir       string
 	store         *store.Store
 	vault         *security.Vault
-	codex         *codex.Client
 	server        *http.Server
 	ctx           context.Context
 	cancel        context.CancelFunc
 	mu            sync.RWMutex
-	dash          Dashboard
+	runtimes      map[int64]*accountRuntime
 	loginAttempts sync.Map
+}
+type accountRuntime struct {
+	client  *codex.Client
+	dash    Dashboard
+	syncing sync.Mutex
 }
 
 func New() (*App, error) {
@@ -49,8 +53,11 @@ func New() (*App, error) {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &App{dataDir: dir, store: s, vault: v, ctx: ctx, cancel: cancel, dash: Dashboard{Limits: []LimitBucket{}, Usage: []UsagePoint{}, Stale: true}}
-	a.codex = codex.New(filepath.Join(dir, "codex"), a.onCodexNotification)
+	a := &App{dataDir: dir, store: s, vault: v, ctx: ctx, cancel: cancel, runtimes: map[int64]*accountRuntime{}}
+	accounts, _ := s.Accounts()
+	for _, account := range accounts {
+		a.addRuntime(account.ID)
+	}
 	a.server = &http.Server{Addr: env("LISTEN_ADDR", ":8080"), Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	return a, nil
 }
@@ -79,45 +86,81 @@ func (a *App) Close() {
 	ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
 	defer c()
 	_ = a.server.Shutdown(ctx)
-	_ = a.codex.Close()
+	a.mu.RLock()
+	for _, rt := range a.runtimes {
+		_ = rt.client.Close()
+	}
+	a.mu.RUnlock()
 	_ = a.store.DB.Close()
 }
 func (a *App) keepCodex() {
-	delay := time.Second
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		default:
 		}
-		if !a.codex.Connected() {
-			if e := a.codex.Start(a.ctx); e == nil {
+		a.mu.RLock()
+		ids := make([]int64, 0, len(a.runtimes))
+		for id := range a.runtimes {
+			ids = append(ids, id)
+		}
+		a.mu.RUnlock()
+		for _, id := range ids {
+			rt := a.runtime(id)
+			if rt == nil || rt.client.Connected() {
+				continue
+			}
+			if e := rt.client.Start(a.ctx); e == nil {
 				ctx, c := context.WithTimeout(a.ctx, 20*time.Second)
-				e = a.codex.Initialize(ctx)
+				e = rt.client.Initialize(ctx)
 				c()
 				if e == nil {
-					delay = time.Second
-					_ = a.sync(context.Background())
+					_ = a.syncAccount(context.Background(), id)
 				} else {
 					log.Printf("app-server initialize: %v", e)
 					// A live process is not necessarily an initialized process. Tear it
 					// down so the next iteration starts a fresh protocol session.
-					_ = a.codex.Close()
-				}
-			}
-			if !a.codex.Connected() {
-				time.Sleep(delay)
-				if delay < 30*time.Second {
-					delay *= 2
+					_ = rt.client.Close()
 				}
 			}
 		}
 		time.Sleep(time.Second)
 	}
 }
-func (a *App) onCodexNotification(method string, _ json.RawMessage) {
-	if method == "account/updated" || method == "account/rateLimits/updated" {
-		go a.sync(context.Background())
+func (a *App) onCodexNotification(id int64) func(string, json.RawMessage) {
+	return func(method string, _ json.RawMessage) {
+		if method == "account/updated" || method == "account/rateLimits/updated" {
+			go a.syncAccount(context.Background(), id)
+		}
+	}
+}
+func (a *App) addRuntime(id int64) {
+	dir := filepath.Join(a.dataDir, "accounts", strconv.FormatInt(id, 10), "codex")
+	if id == 1 {
+		// Account 1 deliberately keeps the legacy path so upgrades retain the
+		// existing login, and fresh installs use the same deterministic path.
+		dir = filepath.Join(a.dataDir, "codex")
+	}
+	rt := &accountRuntime{client: codex.New(dir, a.onCodexNotification(id)), dash: Dashboard{Limits: []LimitBucket{}, Usage: []UsagePoint{}, Stale: true}}
+	a.mu.Lock()
+	a.runtimes[id] = rt
+	a.mu.Unlock()
+}
+func (a *App) runtime(id int64) *accountRuntime {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.runtimes[id]
+}
+func (a *App) syncAll(ctx context.Context) {
+	a.mu.RLock()
+	ids := make([]int64, 0, len(a.runtimes))
+	for id := range a.runtimes {
+		ids = append(ids, id)
+	}
+	a.mu.RUnlock()
+	for _, id := range ids {
+		_ = a.syncAccount(ctx, id)
 	}
 }
 func (a *App) scheduler() {
@@ -130,7 +173,7 @@ func (a *App) scheduler() {
 		case <-t.C:
 			g := a.general()
 			if time.Now().Unix()%(int64(g.SyncMinutes)*60) < 60 {
-				_ = a.sync(context.Background())
+				a.syncAll(context.Background())
 			}
 			_, _ = a.store.Cleanup(g.RetentionDays)
 			go a.processReminders()
@@ -146,7 +189,16 @@ func (a *App) routes() http.Handler {
 			jsonOut(w, 503, map[string]string{"error": e.Error()})
 			return
 		}
-		jsonOut(w, 200, map[string]any{"status": "ok", "appServer": a.codex.Connected()})
+		connected := false
+		a.mu.RLock()
+		for _, rt := range a.runtimes {
+			if rt.client.Connected() {
+				connected = true
+				break
+			}
+		}
+		a.mu.RUnlock()
+		jsonOut(w, 200, map[string]any{"status": "ok", "appServer": connected})
 	})
 	m.HandleFunc("/api/v1/", a.api)
 	sub, _ := fs.Sub(webassets.Assets, "dist")

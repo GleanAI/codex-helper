@@ -67,13 +67,15 @@ type UsagePoint struct {
 	OutputTokens *int64 `json:"outputTokens"`
 }
 type Dashboard struct {
-	Account   AccountView   `json:"account"`
-	Limits    []LimitBucket `json:"limits"`
-	Summary   UsageSummary  `json:"summary"`
-	Usage     []UsagePoint  `json:"usage"`
-	FetchedAt int64         `json:"fetchedAt"`
-	Stale     bool          `json:"stale"`
-	LastError string        `json:"lastError,omitempty"`
+	AccountID   int64         `json:"accountId"`
+	DisplayName string        `json:"displayName"`
+	Account     AccountView   `json:"account"`
+	Limits      []LimitBucket `json:"limits"`
+	Summary     UsageSummary  `json:"summary"`
+	Usage       []UsagePoint  `json:"usage"`
+	FetchedAt   int64         `json:"fetchedAt"`
+	Stale       bool          `json:"stale"`
+	LastError   string        `json:"lastError,omitempty"`
 }
 
 func defaults() GeneralSettings {

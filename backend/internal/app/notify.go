@@ -291,30 +291,45 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 		return
 	}
 	if text == "立即刷新" || text == "/refresh" {
-		_ = a.sync(context.Background())
+		a.syncAll(context.Background())
 	}
-	a.mu.RLock()
-	d := a.dash
-	a.mu.RUnlock()
 	msg := "Codex 用量\n"
+	a.mu.RLock()
+	ds := make([]Dashboard, 0, len(a.runtimes))
+	for _, rt := range a.runtimes {
+		rt.syncing.Lock()
+		ds = append(ds, rt.dash)
+		rt.syncing.Unlock()
+	}
+	a.mu.RUnlock()
 	switch text {
 	case "重置时间", "/reset":
-		for _, x := range d.Limits {
-			msg += fmt.Sprintf("%s/%s：%s\n", x.LimitID, x.WindowType, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+		for _, d := range ds {
+			msg += "[" + d.DisplayName + "]\n"
+			for _, x := range d.Limits {
+				msg += fmt.Sprintf("%s/%s：%s\n", x.LimitID, x.WindowType, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+			}
 		}
 	case "账户信息", "/account":
-		msg += fmt.Sprintf("连接：%v\n", d.Account.Connected)
-		if d.Account.Email != nil {
-			msg += "账户：" + *d.Account.Email + "\n"
-		}
-		if d.Account.PlanType != nil {
-			msg += "套餐：" + *d.Account.PlanType
+		for _, d := range ds {
+			msg += fmt.Sprintf("[%s] 连接：%v\n", d.DisplayName, d.Account.Connected)
+			if d.Account.Email != nil {
+				msg += "账户：" + *d.Account.Email + "\n"
+			}
+			if d.Account.PlanType != nil {
+				msg += "套餐：" + *d.Account.PlanType + "\n"
+			}
 		}
 	case "历史概览", "/usage":
-		msg += fmt.Sprintf("Lifetime tokens：%s\n历史天数：%d", num(d.Summary.LifetimeTokens), len(d.Usage))
+		for _, d := range ds {
+			msg += fmt.Sprintf("[%s] Lifetime tokens：%s，历史天数：%d\n", d.DisplayName, num(d.Summary.LifetimeTokens), len(d.Usage))
+		}
 	default:
-		for _, x := range d.Limits {
-			msg += fmt.Sprintf("%s/%s：%.1f%%，重置 %s\n", x.LimitID, x.WindowType, x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+		for _, d := range ds {
+			msg += "[" + d.DisplayName + "]\n"
+			for _, x := range d.Limits {
+				msg += fmt.Sprintf("%s/%s：剩余 %.1f%%，重置 %s\n", x.LimitID, x.WindowType, 100-x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+			}
 		}
 	}
 	_ = tgSend(t, msg)
@@ -328,57 +343,64 @@ func num(n *int64) string {
 func (a *App) processReminders() {
 	g := a.general()
 	a.mu.RLock()
-	d := a.dash
+	ds := make([]Dashboard, 0, len(a.runtimes))
+	for _, rt := range a.runtimes {
+		rt.syncing.Lock()
+		ds = append(ds, rt.dash)
+		rt.syncing.Unlock()
+	}
 	a.mu.RUnlock()
 	now := time.Now()
-	for _, x := range d.Limits {
-		for _, kind := range []string{"before", "after"} {
-			if kind == "before" && !g.NotifyBefore {
-				continue
-			}
-			if kind == "after" && !g.NotifyAfter {
-				continue
-			}
-			at := time.Unix(x.ResetsAt, 0)
-			if kind == "before" {
-				at = at.Add(-time.Duration(g.BeforeMinutes) * time.Minute)
-			}
-			if now.Before(at) || now.Sub(at) > 6*time.Hour {
-				continue
-			}
-			key := fmt.Sprintf("%s:%s:%d:%s", x.LimitID, x.WindowType, x.ResetsAt, kind)
-			var exists int
-			if a.store.DB.QueryRow("SELECT 1 FROM notifications WHERE dedupe_key=? AND status='sent'", key).Scan(&exists) == nil {
-				continue
-			}
-			body := fmt.Sprintf("Codex %s/%s 当前用量 %.1f%%，重置时间 %s。", x.LimitID, x.WindowType, x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
-			ok := true
-			errs := []string{}
-			if t, e := a.telegramSecret(); e == nil && t.Enabled && t.ChatID != 0 {
-				if e = tgSend(t, body); e != nil {
-					ok = false
-					errs = append(errs, e.Error())
+	for _, d := range ds {
+		for _, x := range d.Limits {
+			for _, kind := range []string{"before", "after"} {
+				if kind == "before" && !g.NotifyBefore {
+					continue
 				}
-			}
-			if s, e := a.smtpSecret(); e == nil && s.Enabled {
-				if e = sendSMTP(s, "Codex 用量重置提醒", body); e != nil {
-					ok = false
-					errs = append(errs, e.Error())
+				if kind == "after" && !g.NotifyAfter {
+					continue
 				}
-			}
-			status := "sent"
-			var sent any = time.Now().Unix()
-			if !ok {
-				status = "failed"
-				sent = nil
-			}
-			_, _ = a.store.DB.Exec(`INSERT INTO notifications(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at)
+				at := time.Unix(x.ResetsAt, 0)
+				if kind == "before" {
+					at = at.Add(-time.Duration(g.BeforeMinutes) * time.Minute)
+				}
+				if now.Before(at) || now.Sub(at) > 6*time.Hour {
+					continue
+				}
+				key := fmt.Sprintf("%d:%s:%s:%d:%s", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt, kind)
+				var exists int
+				if a.store.DB.QueryRow("SELECT 1 FROM notifications WHERE dedupe_key=? AND status='sent'", key).Scan(&exists) == nil {
+					continue
+				}
+				body := fmt.Sprintf("Codex [%s] %s/%s 剩余 %.1f%%，重置时间 %s。", d.DisplayName, x.LimitID, x.WindowType, 100-x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+				ok := true
+				errs := []string{}
+				if t, e := a.telegramSecret(); e == nil && t.Enabled && t.ChatID != 0 {
+					if e = tgSend(t, body); e != nil {
+						ok = false
+						errs = append(errs, e.Error())
+					}
+				}
+				if s, e := a.smtpSecret(); e == nil && s.Enabled {
+					if e = sendSMTP(s, "Codex 用量重置提醒", body); e != nil {
+						ok = false
+						errs = append(errs, e.Error())
+					}
+				}
+				status := "sent"
+				var sent any = time.Now().Unix()
+				if !ok {
+					status = "failed"
+					sent = nil
+				}
+				_, _ = a.store.DB.Exec(`INSERT INTO notifications(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at)
 				VALUES(?,?,?,?,?,?,?,?)
 				ON CONFLICT(dedupe_key) DO UPDATE SET
 				status=excluded.status,
 				attempts=notifications.attempts+1,
 				last_error=excluded.last_error,
 				sent_at=excluded.sent_at`, key, "configured", kind, status, 1, strings.Join(errs, "; "), at.Unix(), sent)
+			}
 		}
 	}
 }
