@@ -1,0 +1,35 @@
+# Codex 集成与用量同步
+
+## 账号隔离与进程生命周期
+
+每个 `accounts` 记录对应一个 `accountRuntime` 和独立 `codex app-server` 子进程。账号 1 为升级兼容固定使用 `/data/codex`；其他账号使用 `/data/accounts/<id>/codex`。该目录通过子进程 `CODEX_HOME` 注入，保存并刷新 ChatGPT 登录凭据。
+
+`ensureReady` 用 lifecycle mutex 串行冷启动：创建目录、启动子进程、在 20 秒内调用 `initialize`，成功后才标记 ready。仅子进程存活不代表协议已初始化；失败进程必须关闭后重试。`syncing` mutex 串行同账号同步并保护 Dashboard，`stateMu` 保护 ready/stopped。删除账号先从应用 map 移除并停止进程，再删除数据库和精确凭据目录。
+
+## JSONL 协议与登录
+
+客户端以 stdio 启动 `codex app-server`，每行一个 JSON 消息。递增 ID 将响应关联到 buffered channel；请求受调用 context 或 20 秒 timeout 控制。旧进程晚退出时不能把替代进程标记为断开。
+
+设备码登录调用：
+
+```text
+account/login/start {type:"chatgptDeviceCode"}
+```
+
+前端展示 `verificationUrl` 与 `userCode`。收到 `account/login/completed`、`account/updated` 或 `account/rateLimits/updated` 后异步重拉数据；登录完成最多以 0、1、3 秒退避等待套餐分类可用。官方流程和字段见 [Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)。Dockerfile 固定的 CLI 版本及项目测试仍是实际兼容基线。
+
+## 同步数据流
+
+一次同步依次读取 `account/read`、`account/rateLimits/read` 和 `account/usage/read`：
+
+- `account/read` 决定连接、邮箱、认证模式和套餐；读取失败会使整次同步失败。
+- 限额读取兼容 `rateLimitsByLimitId` 多 bucket 和旧 `rateLimits` 单 bucket，再把 primary/secondary 展平。失败时保留空限额而不令整次同步失败。
+- 套餐未知时，可从所有可分类且一致的限额 bucket 回填；冲突或未知时必须保持 unknown。
+- 用量读取保存 summary 和每日 Token bucket；接口失败时使用空摘要和空历史，不令整次同步失败。
+- 每次限额同步写入快照、检测用量百分比显著回落，并更新账号元数据及内存 Dashboard。
+
+`account/usage/read` 的 optional 指标和 daily buckets 可能暂未提供。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
+
+## 套餐类型
+
+用户期望类型仅为连接后的校验提示：`any`、`personal`、`team`。当前 personal 包括 free/go/plus/pro/prolite；team 包括 team/business 及两种 self-serve business 标识。未知新套餐必须显示 unknown，不能静默当作某一类型。相同邮箱和相同已知实际类型的多个账号标记 `possibleDuplicate`，但不会自动合并或删除。

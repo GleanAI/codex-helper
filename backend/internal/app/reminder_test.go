@@ -1,6 +1,7 @@
 package app
 
 import (
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -8,6 +9,42 @@ import (
 
 	"codex-helper/internal/store"
 )
+
+func TestSendSMTPStopsWhenServerDoesNotRespond(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+	}()
+	host, portRaw, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = sendSMTPWithTimeout(SMTPSettings{Host: host, Port: port, From: "from@example.com", To: "to@example.com"}, "subject", "text", "html", 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("sendSMTPWithTimeout unexpectedly succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("SMTP timeout took %s", elapsed)
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	default:
+	}
+}
 
 func newReminderTestApp(t *testing.T) *App {
 	t.Helper()

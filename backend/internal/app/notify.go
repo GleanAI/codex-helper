@@ -96,20 +96,36 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
+
+const smtpTimeout = 35 * time.Second
+
 func sendSMTP(s SMTPSettings, subject, textBody, htmlBody string) error {
+	return sendSMTPWithTimeout(s, subject, textBody, htmlBody, smtpTimeout)
+}
+
+func sendSMTPWithTimeout(s SMTPSettings, subject, textBody, htmlBody string, timeout time.Duration) error {
 	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
-	var c *smtp.Client
-	var e error
-	if s.Security == "tls" {
-		conn, x := tls.Dial("tcp", addr, &tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12})
-		if x != nil {
-			return x
-		}
-		c, e = smtp.NewClient(conn, s.Host)
-	} else {
-		c, e = smtp.Dial(addr)
-	}
+	dialer := net.Dialer{Timeout: timeout}
+	conn, e := dialer.Dial("tcp", addr)
 	if e != nil {
+		return e
+	}
+	if e = conn.SetDeadline(time.Now().Add(timeout)); e != nil {
+		_ = conn.Close()
+		return e
+	}
+	var c *smtp.Client
+	if s.Security == "tls" {
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: s.Host, MinVersion: tls.VersionTLS12})
+		if e = tlsConn.Handshake(); e != nil {
+			_ = conn.Close()
+			return e
+		}
+		conn = tlsConn
+	}
+	c, e = smtp.NewClient(conn, s.Host)
+	if e != nil {
+		_ = conn.Close()
 		return e
 	}
 	defer c.Close()

@@ -2,11 +2,52 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
+
+	"codex-helper/internal/security"
 )
+
+func TestSystemStatusRejectsNonGETMethods(t *testing.T) {
+	a := newReminderTestApp(t)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/system/status", nil)
+	a.api(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDashboardSerializesNilListsAsEmptyArrays(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.runtimes[1] = &accountRuntime{}
+	_, err := a.store.DB.Exec("INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)", security.HashToken("test-session"), time.Now().Add(time.Hour).Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?accountId=1", nil)
+	request.AddCookie(&http.Cookie{Name: "session", Value: "test-session"})
+	a.api(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Limits []LimitBucket `json:"limits"`
+		Usage  []UsagePoint  `json:"usage"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Limits == nil || body.Usage == nil {
+		t.Fatalf("nil lists in response: %s", recorder.Body.String())
+	}
+}
 
 type fakeCodexClient struct {
 	mu          sync.Mutex

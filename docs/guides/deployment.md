@@ -1,0 +1,32 @@
+# 部署与运行
+
+用户可见的安装和日常操作以根 [`README.md`](../../README.md) 为准；本文记录维护代码时必须理解的构建和数据边界。
+
+## 镜像结构
+
+`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.0 以 `CGO_ENABLED=0` 构建后端；Node 阶段安装固定 `@openai/codex`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。
+
+前端产物复制到 `backend/internal/web/dist` 后嵌入二进制。运行层使用 UID `10001` 的 system 用户 `helper`，默认 `DATA_DIR=/data`、`LISTEN_ADDR=:8080`，并暴露 `/data` volume 和 8080。健康检查调用二进制自身的 `healthcheck` 子命令。
+
+## Compose 与持久化
+
+`docker-compose.yml` 本地构建 `codex-helper:latest`，将宿主机 8180 映射到容器 8080，并把命名卷 `codex-helper-data` 挂载到 `/data`。全部数据库、密钥、Codex 配置和多账号凭据都依赖这个卷。
+
+升级应使用：
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+```
+
+不要使用 `docker compose down -v`，也不要在未确认 volume 名和备份前重建、迁移或删除数据卷。需要改变运行 UID、volume 或 `DATA_DIR` 时，必须提供旧数据权限和路径的升级验证。
+
+## 网络与安全
+
+应用自身监听 HTTP。公网部署应放在 HTTPS 反向代理后，初始化前限制访问来源，并保证到 OpenAI 登录/Codex 服务、Telegram Bot API 和所选 SMTP 服务的出站连接。当前只有 `LISTEN_ADDR` 是 Compose 显式环境变量；运行配置由前端保存到数据库。
+
+设备码登录不需要 OpenAI API Key。Codex app-server 为每个 `CODEX_HOME` 管理 ChatGPT token；不要把这些目录暴露为静态文件或外部共享目录。
+
+## 备份与恢复
+
+维护接口下载的 SQLite 快照适合查看或数据库级备份，但不包含解密密钥和 Codex 凭据。完整恢复步骤是：停止容器、备份或恢复整个 `/data`、确认 UID `10001` 可读写、再启动并检查 `/health/live`、`/health/ready`、管理员登录和各账号连接。恢复过程不得只替换数据库而遗失对应 `secret.key`。

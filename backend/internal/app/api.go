@@ -19,6 +19,10 @@ import (
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	if p == "system/status" {
+		if r.Method != http.MethodGet {
+			jsonOut(w, http.StatusMethodNotAllowed, map[string]string{"error": "方法不允许"})
+			return
+		}
 		connected := false
 		a.mu.RLock()
 		for _, rt := range a.runtimes {
@@ -97,6 +101,12 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			rt.syncing.Lock()
 			d := rt.dash
 			rt.syncing.Unlock()
+			if d.Limits == nil {
+				d.Limits = []LimitBucket{}
+			}
+			if d.Usage == nil {
+				d.Usage = []UsagePoint{}
+			}
 			jsonOut(w, 200, d)
 		}
 	case p == "sync" && r.Method == "POST":

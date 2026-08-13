@@ -209,6 +209,8 @@ docker compose restart codex-helper
 
 前端与后端分别位于 `frontend/` 和 `backend/`。
 
+维护项目或使用编码代理前，请先阅读 [AGENTS.md](AGENTS.md) 和[维护者文档中心](docs/README.md)；修改 HTTP 接口时同时核对[后端 API 契约](backend/CONTRACT.md)。维护者的可复现验证基线统一使用 Docker，下面的宿主机命令仅用于人工本地开发。
+
 启动前端开发服务器：
 
 ```bash
