@@ -398,6 +398,23 @@ header p {
   gap: 20px;
   align-items: start;
 }
+.settings-content {
+  display: grid;
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
+  min-height: 640px;
+}
+.settings-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.settings-panel.active {
+  visibility: visible;
+  pointer-events: auto;
+}
 .tabs {
   display: flex;
   flex-direction: column;
@@ -544,6 +561,9 @@ a {
   }
   .settings {
     grid-template-columns: 1fr;
+  }
+  .settings-content {
+    min-height: 900px;
   }
   .tabs {
     flex-direction: row;

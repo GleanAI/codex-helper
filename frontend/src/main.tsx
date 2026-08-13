@@ -492,51 +492,86 @@ const Chart = ({ data }: { data: Point[] }) => (
     </ResponsiveContainer>
   </div>
 );
+type SettingsTab = "general" | "codex" | "telegram" | "smtp";
+
+const settingsTabs: Array<{
+  id: SettingsTab;
+  label: string;
+  icon: React.ReactNode;
+  content: React.ReactNode;
+}> = [
+  { id: "general", label: "通用", icon: <Settings />, content: <General /> },
+  { id: "codex", label: "Codex", icon: <Zap />, content: <CodexSettings /> },
+  {
+    id: "telegram",
+    label: "Telegram",
+    icon: <Bell />,
+    content: <Telegram />,
+  },
+  { id: "smtp", label: "SMTP 邮件", icon: <Bell />, content: <SMTP /> },
+];
+
 function SettingsPage() {
-  const [tab, setTab] = useState("general");
+  const [tab, setTab] = useState<SettingsTab>("general");
+  const selectAdjacentTab = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) => {
+    let nextIndex: number | undefined;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown")
+      nextIndex = (currentIndex + 1) % settingsTabs.length;
+    if (event.key === "ArrowLeft" || event.key === "ArrowUp")
+      nextIndex = (currentIndex - 1 + settingsTabs.length) % settingsTabs.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = settingsTabs.length - 1;
+    if (nextIndex === undefined) return;
+
+    event.preventDefault();
+    const nextTab = settingsTabs[nextIndex].id;
+    setTab(nextTab);
+    document.getElementById(`settings-tab-${nextTab}`)?.focus();
+  };
   return (
     <>
       <Header title="设置中心" />
       <div className="settings">
-        <div className="tabs">
-          <button
-            className={tab === "general" ? "active" : ""}
-            onClick={() => setTab("general")}
-          >
-            <Settings />
-            通用
-          </button>
-          <button
-            className={tab === "codex" ? "active" : ""}
-            onClick={() => setTab("codex")}
-          >
-            <Zap />
-            Codex
-          </button>
-          <button
-            className={tab === "telegram" ? "active" : ""}
-            onClick={() => setTab("telegram")}
-          >
-            <Bell />
-            Telegram
-          </button>
-          <button
-            className={tab === "smtp" ? "active" : ""}
-            onClick={() => setTab("smtp")}
-          >
-            <Bell />
-            SMTP 邮件
-          </button>
+        <div className="tabs" role="tablist" aria-label="设置分类">
+          {settingsTabs.map((item, index) => (
+            <button
+              key={item.id}
+              id={`settings-tab-${item.id}`}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.id}
+              aria-controls={`settings-panel-${item.id}`}
+              tabIndex={tab === item.id ? 0 : -1}
+              className={tab === item.id ? "active" : ""}
+              onClick={() => setTab(item.id)}
+              onKeyDown={(event) => selectAdjacentTab(event, index)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
         </div>
-        {tab === "general" ? (
-          <General />
-        ) : tab === "codex" ? (
-          <CodexSettings />
-        ) : tab === "telegram" ? (
-          <Telegram />
-        ) : (
-          <SMTP />
-        )}
+        <div className="settings-content">
+          {settingsTabs.map((item) => {
+            const active = tab === item.id;
+            return (
+              <section
+                key={item.id}
+                id={`settings-panel-${item.id}`}
+                className={`settings-panel${active ? " active" : ""}`}
+                role="tabpanel"
+                aria-labelledby={`settings-tab-${item.id}`}
+                aria-hidden={!active}
+                inert={!active}
+              >
+                {item.content}
+              </section>
+            );
+          })}
+        </div>
       </div>
     </>
   );
