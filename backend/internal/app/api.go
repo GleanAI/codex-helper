@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codex-helper/internal/security"
+	"codex-helper/internal/store"
 )
 
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,8 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		}
 	case p == "accounts" && r.Method == "POST":
 		var in struct {
-			DisplayName string `json:"displayName"`
+			DisplayName  string `json:"displayName"`
+			ExpectedKind string `json:"expectedKind"`
 		}
 		if decode(r, &in) != nil {
 			jsonOut(w, 400, map[string]string{"error": "请求格式错误"})
@@ -67,7 +69,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if in.DisplayName == "" {
 			in.DisplayName = "新账号"
 		}
-		x, e := a.store.CreateAccount(in.DisplayName)
+		if in.ExpectedKind == "" {
+			in.ExpectedKind = "any"
+		}
+		if !store.ValidExpectedKind(in.ExpectedKind) {
+			jsonOut(w, 400, map[string]string{"error": "连接类型无效"})
+			break
+		}
+		x, e := a.store.CreateAccount(in.DisplayName, in.ExpectedKind)
 		if e == nil {
 			a.addRuntime(x.ID)
 			jsonOut(w, 201, x)
@@ -164,13 +173,27 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 	switch {
 	case action == "" && r.Method == "PUT":
 		var in struct {
-			DisplayName string `json:"displayName"`
+			DisplayName  string `json:"displayName"`
+			ExpectedKind string `json:"expectedKind"`
 		}
 		if decode(r, &in) != nil || strings.TrimSpace(in.DisplayName) == "" {
 			jsonOut(w, 400, map[string]string{"error": "名称不能为空"})
 			return
 		}
-		e = a.store.RenameAccount(id, strings.TrimSpace(in.DisplayName))
+		if in.ExpectedKind == "" {
+			accounts, _ := a.store.Accounts()
+			for _, account := range accounts {
+				if account.ID == id {
+					in.ExpectedKind = account.ExpectedKind
+					break
+				}
+			}
+		}
+		if !store.ValidExpectedKind(in.ExpectedKind) {
+			jsonOut(w, 400, map[string]string{"error": "连接类型无效"})
+			return
+		}
+		e = a.store.UpdateAccountSettings(id, strings.TrimSpace(in.DisplayName), in.ExpectedKind)
 		if e == nil {
 			jsonOut(w, 200, map[string]bool{"ok": true})
 		}
@@ -391,6 +414,24 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 			}
 		} else if lr.RateLimits != nil {
 			d.Limits = flattenLimit(*lr.RateLimits)
+		}
+	}
+	// Some app-server versions expose the workspace plan only on limit buckets.
+	if ar.Account != nil && store.AccountKind(d.Account.PlanType) == "unknown" {
+		var fallback *string
+		consistent := true
+		for _, x := range d.Limits {
+			if store.AccountKind(x.PlanType) == "unknown" {
+				continue
+			}
+			if fallback == nil {
+				fallback = x.PlanType
+			} else if store.AccountKind(fallback) != store.AccountKind(x.PlanType) {
+				consistent = false
+			}
+		}
+		if consistent && fallback != nil {
+			d.Account.PlanType = fallback
 		}
 	}
 	var ur struct {

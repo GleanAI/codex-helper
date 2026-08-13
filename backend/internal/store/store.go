@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -59,11 +60,30 @@ func (s *Store) migrateAccounts() error {
 		display_name TEXT NOT NULL,
 		email TEXT,
 		plan_type TEXT,
+		expected_kind TEXT NOT NULL DEFAULT 'any',
 		connected INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	)`); err != nil {
 		return err
+	}
+	var hasExpectedKind bool
+	rows, qerr := tx.Query("PRAGMA table_info(accounts)")
+	if qerr != nil {
+		return qerr
+	}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		_ = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk)
+		hasExpectedKind = hasExpectedKind || name == "expected_kind"
+	}
+	rows.Close()
+	if !hasExpectedKind {
+		if _, err = tx.Exec("ALTER TABLE accounts ADD COLUMN expected_kind TEXT NOT NULL DEFAULT 'any'"); err != nil {
+			return err
+		}
 	}
 	var count int
 	if err = tx.QueryRow("SELECT COUNT(*) FROM accounts").Scan(&count); err != nil {
@@ -122,17 +142,21 @@ func (s *Store) migrateAccounts() error {
 }
 
 type Account struct {
-	ID          int64   `json:"id"`
-	DisplayName string  `json:"displayName"`
-	Email       *string `json:"email"`
-	PlanType    *string `json:"planType"`
-	Connected   bool    `json:"connected"`
-	CreatedAt   int64   `json:"createdAt"`
-	UpdatedAt   int64   `json:"updatedAt"`
+	ID                int64   `json:"id"`
+	DisplayName       string  `json:"displayName"`
+	Email             *string `json:"email"`
+	PlanType          *string `json:"planType"`
+	ExpectedKind      string  `json:"expectedKind"`
+	ActualKind        string  `json:"actualKind"`
+	ValidationStatus  string  `json:"validationStatus"`
+	PossibleDuplicate bool    `json:"possibleDuplicate"`
+	Connected         bool    `json:"connected"`
+	CreatedAt         int64   `json:"createdAt"`
+	UpdatedAt         int64   `json:"updatedAt"`
 }
 
 func (s *Store) Accounts() ([]Account, error) {
-	rows, e := s.DB.Query("SELECT id,display_name,email,plan_type,connected,created_at,updated_at FROM accounts ORDER BY id")
+	rows, e := s.DB.Query("SELECT id,display_name,email,plan_type,expected_kind,connected,created_at,updated_at FROM accounts ORDER BY id")
 	if e != nil {
 		return nil, e
 	}
@@ -140,24 +164,40 @@ func (s *Store) Accounts() ([]Account, error) {
 	out := []Account{}
 	for rows.Next() {
 		var a Account
-		if e = rows.Scan(&a.ID, &a.DisplayName, &a.Email, &a.PlanType, &a.Connected, &a.CreatedAt, &a.UpdatedAt); e != nil {
+		if e = rows.Scan(&a.ID, &a.DisplayName, &a.Email, &a.PlanType, &a.ExpectedKind, &a.Connected, &a.CreatedAt, &a.UpdatedAt); e != nil {
 			return nil, e
 		}
+		a.ActualKind, a.ValidationStatus = AccountKind(a.PlanType), validationStatus(a.ExpectedKind, a.Connected, a.PlanType)
 		out = append(out, a)
+	}
+	for i := range out {
+		if out[i].Email == nil || out[i].ActualKind == "unknown" {
+			continue
+		}
+		for j := range out {
+			if i != j && out[j].Email != nil && strings.EqualFold(*out[i].Email, *out[j].Email) && out[i].ActualKind == out[j].ActualKind {
+				out[i].PossibleDuplicate = true
+				break
+			}
+		}
 	}
 	return out, rows.Err()
 }
-func (s *Store) CreateAccount(name string) (Account, error) {
+func (s *Store) CreateAccount(name string, kinds ...string) (Account, error) {
+	expectedKind := "any"
+	if len(kinds) > 0 {
+		expectedKind = kinds[0]
+	}
 	now := time.Now().Unix()
-	r, e := s.DB.Exec("INSERT INTO accounts(display_name,created_at,updated_at) VALUES(?,?,?)", name, now, now)
+	r, e := s.DB.Exec("INSERT INTO accounts(display_name,expected_kind,created_at,updated_at) VALUES(?,?,?,?)", name, expectedKind, now, now)
 	if e != nil {
 		return Account{}, e
 	}
 	id, _ := r.LastInsertId()
-	return Account{ID: id, DisplayName: name, CreatedAt: now, UpdatedAt: now}, nil
+	return Account{ID: id, DisplayName: name, ExpectedKind: expectedKind, ActualKind: "unknown", ValidationStatus: "pending", CreatedAt: now, UpdatedAt: now}, nil
 }
-func (s *Store) RenameAccount(id int64, name string) error {
-	r, e := s.DB.Exec("UPDATE accounts SET display_name=?,updated_at=? WHERE id=?", name, time.Now().Unix(), id)
+func (s *Store) UpdateAccountSettings(id int64, name, expectedKind string) error {
+	r, e := s.DB.Exec("UPDATE accounts SET display_name=?,expected_kind=?,updated_at=? WHERE id=?", name, expectedKind, time.Now().Unix(), id)
 	if e != nil {
 		return e
 	}
@@ -166,6 +206,45 @@ func (s *Store) RenameAccount(id int64, name string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+func (s *Store) RenameAccount(id int64, name string) error {
+	var kind string
+	if err := s.DB.QueryRow("SELECT expected_kind FROM accounts WHERE id=?", id).Scan(&kind); err != nil {
+		return err
+	}
+	return s.UpdateAccountSettings(id, name, kind)
+}
+
+func ValidExpectedKind(kind string) bool {
+	return kind == "any" || kind == "personal" || kind == "team"
+}
+
+func AccountKind(plan *string) string {
+	if plan == nil {
+		return "unknown"
+	}
+	switch strings.ToLower(strings.TrimSpace(*plan)) {
+	case "free", "go", "plus", "pro", "prolite":
+		return "personal"
+	case "team", "business", "self_serve_business_prolite", "self_serve_business_usage_based":
+		return "team"
+	default:
+		return "unknown"
+	}
+}
+
+func validationStatus(expected string, connected bool, plan *string) string {
+	if !connected {
+		return "pending"
+	}
+	actual := AccountKind(plan)
+	if actual == "unknown" {
+		return "unknown"
+	}
+	if expected == "any" || expected == actual {
+		return "matched"
+	}
+	return "mismatch"
 }
 func (s *Store) UpdateAccount(id int64, email, plan *string, connected bool) error {
 	_, e := s.DB.Exec("UPDATE accounts SET email=?,plan_type=?,connected=?,updated_at=? WHERE id=?", email, plan, connected, time.Now().Unix(), id)

@@ -54,6 +54,56 @@ func TestAccountsAndPerAccountUsage(t *testing.T) {
 	}
 }
 
+func TestAccountKindAndValidation(t *testing.T) {
+	tests := []struct{ plan, kind string }{
+		{"plus", "personal"}, {"Pro", "personal"}, {"team", "team"},
+		{"business", "team"}, {"self_serve_business_usage_based", "team"},
+		{"enterprise", "unknown"}, {"", "unknown"},
+	}
+	for _, tt := range tests {
+		plan := tt.plan
+		if got := AccountKind(&plan); got != tt.kind {
+			t.Errorf("AccountKind(%q) = %q; want %q", tt.plan, got, tt.kind)
+		}
+	}
+	if got := validationStatus("team", true, ptr("plus")); got != "mismatch" {
+		t.Fatalf("team/plus validation = %q; want mismatch", got)
+	}
+	if got := validationStatus("team", true, ptr("business")); got != "matched" {
+		t.Fatalf("team/business validation = %q; want matched", got)
+	}
+}
+
+func TestExistingAccountsGainExpectedKind(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "codex-helper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE accounts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, display_name TEXT NOT NULL, email TEXT,
+		plan_type TEXT, connected INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+	); INSERT INTO accounts VALUES(1,'旧连接','user@example.com','team',1,1,1);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	accounts, err := s.Accounts()
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("accounts = %#v, %v", accounts, err)
+	}
+	if accounts[0].ExpectedKind != "any" || accounts[0].ActualKind != "team" || accounts[0].ValidationStatus != "matched" {
+		t.Fatalf("migrated account = %#v", accounts[0])
+	}
+}
+
+func ptr(value string) *string { return &value }
+
 func TestLegacyUsageMigratesToDefaultAccount(t *testing.T) {
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "codex-helper.db"))

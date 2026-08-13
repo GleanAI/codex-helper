@@ -46,6 +46,10 @@ type Account = {
   displayName: string;
   email?: string;
   planType?: string;
+  expectedKind: "any" | "personal" | "team";
+  actualKind: "unknown" | "personal" | "team";
+  validationStatus: "pending" | "matched" | "mismatch" | "unknown";
+  possibleDuplicate: boolean;
   connected: boolean;
 };
 type Dash = {
@@ -358,7 +362,7 @@ function Dashboard() {
             {d.displayName} · {d.account.email || "尚未连接"}
           </b>
         </div>
-        <span className="badge">{d.account.planType || "未识别套餐"}</span>
+        <span className="badge">{planLabel(d.account.planType)}</span>
         <span className="fresh">
           更新于{" "}
           {d.fetchedAt
@@ -683,12 +687,29 @@ function CodexSettings() {
   const [xs, setXs] = useState<Account[]>([]),
     [result, setResult] = useState<any>(null),
     [active, setActive] = useState(0),
+    [newKind, setNewKind] = useState<"personal" | "team">("team"),
     [busy, setBusy] = useState(false),
     [err, setErr] = useState("");
-  const load = () => api<Account[]>("accounts").then(setXs);
+  const load = () => api<Account[]>("accounts").then((accounts) => { setXs(accounts); return accounts; });
   useEffect(() => {
     load();
   }, []);
+  useEffect(() => {
+    if (!result || !active) return;
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      const accounts = await load();
+      const account = accounts.find((x) => x.id === active);
+      if (
+        account &&
+        ["matched", "mismatch"].includes(account.validationStatus)
+      )
+        clearInterval(timer);
+      else if (Date.now() - started >= 120000)
+        clearInterval(timer);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [result, active]);
   const login = async (id: number) => {
     try {
       setBusy(true);
@@ -708,6 +729,7 @@ function CodexSettings() {
       setErr("");
       const x = await post<Account>("accounts", {
         displayName: `账号 ${xs.length + 1}`,
+        expectedKind: newKind,
       });
       await load();
       setActive(x.id);
@@ -727,6 +749,18 @@ function CodexSettings() {
             个人订阅和 Team 工作区请分别添加为独立连接；同一邮箱可以添加多次。
           </p>
         </div>
+        <label>
+          新连接类型
+          <select
+            value={newKind}
+            onChange={(e) =>
+              setNewKind(e.target.value as "personal" | "team")
+            }
+          >
+            <option value="team">Team / Business 工作区</option>
+            <option value="personal">个人订阅</option>
+          </select>
+        </label>
         <button disabled={busy} onClick={add}>
           {busy && active === 0 ? "服务启动中…" : "添加账号"}
         </button>
@@ -742,15 +776,41 @@ function CodexSettings() {
                 onBlur={async (e) => {
                   const name = e.target.value.trim();
                   if (name && name !== x.displayName) {
-                    await put(`accounts/${x.id}`, { displayName: name });
+                    await put(`accounts/${x.id}`, {
+                      displayName: name,
+                      expectedKind: x.expectedKind,
+                    });
                     load();
                   }
                 }}
               />
               <small>
-                {x.email || "尚未登录"} · {x.planType || "未识别套餐"}
+                {x.email || "尚未登录"} · {planLabel(x.planType)}
               </small>
+              <small className={x.validationStatus === "mismatch" ? "error" : ""}>
+                {validationLabel(x)}
+              </small>
+              {x.possibleDuplicate && (
+                <small className="hint">
+                  同一邮箱已有相同类型连接，请确认没有重复授权同一工作区
+                </small>
+              )}
             </div>
+            <select
+              aria-label="预期连接类型"
+              value={x.expectedKind}
+              onChange={async (e) => {
+                await put(`accounts/${x.id}`, {
+                  displayName: x.displayName,
+                  expectedKind: e.target.value,
+                });
+                load();
+              }}
+            >
+              <option value="any">不校验</option>
+              <option value="personal">个人订阅</option>
+              <option value="team">Team / Business</option>
+            </select>
             <button
               className="secondary"
               disabled={busy}
@@ -1056,6 +1116,24 @@ const duration = (v?: number) =>
       : v < 3600
         ? `${Math.floor(v / 60)} 分 ${v % 60} 秒`
         : `${(v / 3600).toFixed(1)} 小时`;
+const planLabel = (plan?: string) => {
+  if (!plan) return "未识别套餐";
+  const labels: Record<string, string> = {
+    free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: "Pro Lite",
+    team: "Team", business: "Business",
+    self_serve_business_prolite: "Business Pro Lite",
+    self_serve_business_usage_based: "Business（按量）",
+    enterprise: "Enterprise", edu: "Edu",
+  };
+  return labels[plan.toLowerCase()] || plan;
+};
+const validationLabel = (account: Account) => {
+  if (account.expectedKind === "any") return "未启用套餐类型校验";
+  if (account.validationStatus === "pending") return `等待验证${account.expectedKind === "team" ? " Team / Business" : "个人订阅"}`;
+  if (account.validationStatus === "matched") return account.actualKind === "team" ? "已连接 Team / Business 工作区" : "已连接个人订阅";
+  if (account.validationStatus === "mismatch") return `类型不匹配：实际为 ${planLabel(account.planType)}，请退出后重新授权`;
+  return `无法验证工作区类型：${planLabel(account.planType)}`;
+};
 const relative = (ts: number) => {
   const s = Math.max(0, ts - Math.floor(Date.now() / 1000));
   if (!s) return "即将重置";

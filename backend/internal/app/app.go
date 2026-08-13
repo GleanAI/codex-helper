@@ -135,10 +135,44 @@ func (a *App) keepCodex() {
 }
 func (a *App) onCodexNotification(id int64) func(string, json.RawMessage) {
 	return func(method string, _ json.RawMessage) {
-		if method == "account/updated" || method == "account/rateLimits/updated" {
-			go a.syncAccount(context.Background(), id)
+		if method == "account/login/completed" || method == "account/updated" || method == "account/rateLimits/updated" {
+			go a.syncAccountWithRetry(id, method == "account/login/completed")
 		}
 	}
+}
+
+func (a *App) syncAccountWithRetry(id int64, requireClassifiedAccount bool) {
+	delays := []time.Duration{0, time.Second, 3 * time.Second}
+	var err error
+	for _, delay := range delays {
+		if delay > 0 {
+			select {
+			case <-a.ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+		err = a.syncAccount(context.Background(), id)
+		if err == nil {
+			rt := a.runtime(id)
+			if !requireClassifiedAccount || rt == nil || accountClassificationReady(rt) {
+				return
+			}
+			err = errors.New("登录已完成，但工作区套餐尚未就绪")
+		}
+	}
+	if rt := a.runtime(id); rt != nil {
+		rt.syncing.Lock()
+		rt.dash.Stale = true
+		rt.dash.LastError = err.Error()
+		rt.syncing.Unlock()
+	}
+}
+
+func accountClassificationReady(rt *accountRuntime) bool {
+	rt.syncing.Lock()
+	defer rt.syncing.Unlock()
+	return rt.dash.Account.Connected && store.AccountKind(rt.dash.Account.PlanType) != "unknown"
 }
 func (a *App) addRuntime(id int64) {
 	dir := filepath.Join(a.dataDir, "accounts", strconv.FormatInt(id, 10), "codex")

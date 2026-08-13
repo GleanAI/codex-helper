@@ -158,3 +158,26 @@ func TestDeviceLoginStartsColdRuntime(t *testing.T) {
 		t.Fatalf("starts = %d, initializes = %d, calls = %d; want 1 each", starts, initializes, calls)
 	}
 }
+
+func TestAccountClassificationReadyRequiresConnectedKnownPlan(t *testing.T) {
+	team := "team"
+	unknown := "unknown"
+	tests := []struct {
+		name    string
+		account AccountView
+		want    bool
+	}{
+		{name: "disconnected", account: AccountView{PlanType: &team}, want: false},
+		{name: "missing plan", account: AccountView{Connected: true}, want: false},
+		{name: "unknown plan", account: AccountView{Connected: true, PlanType: &unknown}, want: false},
+		{name: "classified", account: AccountView{Connected: true, PlanType: &team}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := &accountRuntime{dash: Dashboard{Account: tt.account}}
+			if got := accountClassificationReady(rt); got != tt.want {
+				t.Fatalf("accountClassificationReady() = %v; want %v", got, tt.want)
+			}
+		})
+	}
+}

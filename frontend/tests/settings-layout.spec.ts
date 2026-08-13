@@ -12,7 +12,17 @@ const responses: Record<string, unknown> = {
     notifyBefore: true,
     notifyAfter: true,
   },
-  accounts: [{ id: 1, displayName: "默认账号", email: "test@example.com", planType: "Plus", connected: true }],
+  accounts: [{
+    id: 1,
+    displayName: "默认账号",
+    email: "test@example.com",
+    planType: "plus",
+    expectedKind: "personal",
+    actualKind: "personal",
+    validationStatus: "matched",
+    possibleDuplicate: false,
+    connected: true,
+  }],
   "settings/telegram": { token: "", configured: true, enabled: true, menuEnabled: true },
   "settings/smtp": {
     host: "smtp.example.com",
