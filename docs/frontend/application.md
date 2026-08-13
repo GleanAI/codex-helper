@@ -4,7 +4,7 @@
 
 ## 状态与路由
 
-应用启动先请求 `system/status`，已初始化时再请求 `auth/me`。未初始化渲染安装页；未登录渲染登录页；登录后由 `BrowserRouter` 提供 `/` 总览和 `/settings` 设置，未知路径回到 `/`。这些分支只负责交互，服务端 session 才是安全边界。
+应用启动先请求 `system/status`，已初始化时再请求 `auth/me`。未初始化渲染安装页；未登录渲染登录页；登录后由 `BrowserRouter` 提供 `/` 总览和 `/settings` 设置，未知路径回到 `/`。状态响应中的构建版本以 `v<version>` 徽标显示在安装页、登录页和登录后侧栏的品牌区域。这些分支只负责交互，服务端 session 才是安全边界。
 
 主题和当前账号 ID 保存到 `localStorage`。总览先加载账号列表，为当前账号加载 Dashboard，并每 30 秒刷新内存数据；切换账号必须清空旧 Dashboard，避免短暂展示另一账号信息。手动刷新调用账号级 sync 后重新读取 Dashboard。
 

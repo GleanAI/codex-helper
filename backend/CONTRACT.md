@@ -43,7 +43,7 @@
 
 | 方法与路径 | 鉴权 | 行为 |
 | --- | --- | --- |
-| `GET /api/v1/system/status` | 匿名 | `200 {initialized,version,appServer}`。当前版本字段为 `0.2.0`。 |
+| `GET /api/v1/system/status` | 匿名 | `200 {initialized,version,appServer}`。`version` 为镜像构建时注入的应用版本，未注入时默认为 `0.2.0`。 |
 | `POST /api/v1/setup` | 匿名、仅未初始化 | body `{username,password,timezone}`；用户名至少 3 位、密码至少 10 位，否则 400；时区有效时写入，否则使用默认 UTC。事务创建唯一管理员和通用设置，设置 session，返回 `201 {ok:true}`；已初始化返回 409。 |
 | `POST /api/v1/auth/login` | 匿名 | body `{username,password}`；未初始化返回 409，错误凭据返回 401，成功设置 session 并返回 `200 {ok:true}`，限流返回 429。 |
 | `任意方法 /api/v1/auth/me` | session；非 `GET`/`HEAD` 还需来源头 | `200 {username}`。前端使用 `GET`。 |

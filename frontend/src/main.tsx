@@ -90,6 +90,7 @@ function App() {
   if (!s.initialized)
     return (
       <Setup
+        version={s.version}
         onDone={() => {
           setS({ ...s, initialized: true });
           setAuth(true);
@@ -100,9 +101,15 @@ function App() {
     <BrowserRouter>
       <Routes>
         {auth ? (
-          <Route path="*" element={<Shell logout={() => setAuth(false)} />} />
+          <Route
+            path="*"
+            element={<Shell version={s.version} logout={() => setAuth(false)} />}
+          />
         ) : (
-          <Route path="*" element={<Login done={() => setAuth(true)} />} />
+          <Route
+            path="*"
+            element={<Login version={s.version} done={() => setAuth(true)} />}
+          />
         )}
       </Routes>
     </BrowserRouter>
@@ -116,7 +123,15 @@ const Splash = () => (
     <div className="spinner" />
   </main>
 );
-function Setup({ onDone }: { onDone: () => void }) {
+function Brand({ version }: { version?: string }) {
+  return (
+    <div className="logo">
+      <Zap /> Codex Helper
+      {version && <span className="version-badge">v{version}</span>}
+    </div>
+  );
+}
+function Setup({ version, onDone }: { version: string; onDone: () => void }) {
   const [form, set] = useState({
     username: "admin",
     password: "",
@@ -135,9 +150,7 @@ function Setup({ onDone }: { onDone: () => void }) {
   return (
     <main className="setup">
       <section className="hero">
-        <div className="logo">
-          <Zap /> Codex Helper
-        </div>
+        <Brand version={version} />
         <h1>
           连接你的 Codex
           <br />
@@ -146,6 +159,9 @@ function Setup({ onDone }: { onDone: () => void }) {
         <p>一个容器内完成用量洞察、重置提醒与账户管理。</p>
       </section>
       <form className="panel form" onSubmit={submit}>
+        <div className="setup-mobile-brand">
+          <Brand version={version} />
+        </div>
         <small>首次初始化 · 1 / 1</small>
         <h2>创建管理员</h2>
         <label>
@@ -181,7 +197,7 @@ function Setup({ onDone }: { onDone: () => void }) {
     </main>
   );
 }
-function Login({ done }: { done: () => void }) {
+function Login({ version, done }: { version: string; done: () => void }) {
   const [u, setU] = useState("admin"),
     [p, setP] = useState(""),
     [e, setE] = useState("");
@@ -199,9 +215,7 @@ function Login({ done }: { done: () => void }) {
           }
         }}
       >
-        <div className="logo">
-          <Zap /> Codex Helper
-        </div>
+        <Brand version={version} />
         <h2>欢迎回来</h2>
         <label>
           用户名
@@ -221,7 +235,7 @@ function Login({ done }: { done: () => void }) {
     </main>
   );
 }
-function Shell({ logout }: { logout: () => void }) {
+function Shell({ version, logout }: { version: string; logout: () => void }) {
   const nav = useNavigate();
   const [theme, setTheme] = useState(localStorage.theme || "system");
   useEffect(() => {
@@ -236,9 +250,7 @@ function Shell({ logout }: { logout: () => void }) {
   return (
     <div className="app">
       <aside>
-        <div className="logo">
-          <Zap /> Codex Helper
-        </div>
+        <Brand version={version} />
         <nav>
           <button onClick={() => nav("/")}>
             <Activity />

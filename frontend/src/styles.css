@@ -76,6 +76,17 @@ select {
   color: var(--accent);
   width: 22px;
 }
+.version-badge {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 .setup {
   min-height: 100vh;
   display: grid;
@@ -83,6 +94,9 @@ select {
   align-items: center;
   gap: 8vw;
   padding: 7vw;
+}
+.setup-mobile-brand {
+  display: none;
 }
 .hero h1 {
   font-size: clamp(42px, 5vw, 76px);
@@ -575,6 +589,9 @@ a {
   }
   .hero {
     display: none;
+  }
+  .setup-mobile-brand {
+    display: block;
   }
   .app {
     grid-template-columns: 1fr;

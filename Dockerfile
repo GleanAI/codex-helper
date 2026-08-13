@@ -7,13 +7,14 @@ COPY frontend/index.html ./index.html
 RUN npm ci && npm run build
 
 FROM golang:1.26.0-bookworm AS backend
+ARG APP_VERSION=0.2.0
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum* ./
 RUN go mod download
 COPY backend/cmd ./cmd
 COPY backend/internal ./internal
 COPY --from=frontend /src/backend/internal/web/dist ./internal/web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/codex-helper ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X codex-helper/internal/app.Version=${APP_VERSION}" -o /out/codex-helper ./cmd/server
 
 FROM node:24.19.0-bookworm-slim AS codex
 ARG CODEX_VERSION=0.147.0

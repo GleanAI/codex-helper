@@ -32,7 +32,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		a.mu.RUnlock()
-		jsonOut(w, 200, map[string]any{"initialized": a.store.Initialized(), "version": "0.2.0", "appServer": connected})
+		jsonOut(w, 200, map[string]any{"initialized": a.store.Initialized(), "version": Version, "appServer": connected})
 		return
 	}
 	if p == "setup" && r.Method == "POST" {

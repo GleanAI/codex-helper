@@ -25,6 +25,9 @@ import (
 	webassets "codex-helper/internal/web"
 )
 
+// Version is overridden at build time for release images.
+var Version = "0.2.0"
+
 type App struct {
 	dataDir       string
 	store         *store.Store

@@ -4,9 +4,21 @@
 
 ## 镜像结构
 
-`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.0 以 `CGO_ENABLED=0` 构建后端；Node 阶段安装固定 `@openai/codex`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。
+`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.0 以 `CGO_ENABLED=0` 构建后端；Node 阶段安装固定 `@openai/codex`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。`APP_VERSION` 构建参数通过 Go linker 注入状态 API，未指定时默认为 `0.2.0`，前端在品牌区域显示该版本。
 
 前端产物复制到 `backend/internal/web/dist` 后嵌入二进制。运行层使用 UID `10001` 的 system 用户 `helper`，默认 `DATA_DIR=/data`、`LISTEN_ADDR=:8080`，并暴露 `/data` volume 和 8080。健康检查调用二进制自身的 `healthcheck` 子命令。
+
+## 发布镜像
+
+仓库根目录的 `push-image.sh` 构建 `linux/amd64`、`linux/arm64` 镜像并推送至 Docker Hub。版本号必须形如 `0.3.0` 或 `0.3.0-beta.1`，同时作为应用版本和镜像标签；脚本还会更新 `latest`：
+
+```bash
+docker login -u koalalove
+bash push-image.sh 0.3.0
+# 完整重新构建：bash push-image.sh 0.3.0 --no-cache
+```
+
+脚本会创建并选用 `codex-helper-builder` buildx builder，并尝试通过 `tonistiigi/binfmt` 注册跨架构模拟器。发布前应先完成本地镜像验证；脚本执行成功即会推送远端标签。
 
 ## Compose 与持久化
 

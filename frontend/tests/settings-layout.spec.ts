@@ -49,6 +49,40 @@ async function openSettings(page: Page) {
   await expect(page.locator(".settings-loading")).toHaveCount(0);
 }
 
+test("shows the build version in the authenticated brand", async ({ page }) => {
+  await openSettings(page);
+  const badge = page.locator("aside .version-badge");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText("vtest");
+});
+
+test("shows the build version before setup", async ({ page }) => {
+  await page.route("**/api/v1/system/status", (route) =>
+    route.fulfill({ json: { initialized: false, appServer: false, version: "test" } }),
+  );
+  await page.goto("/");
+  const badge = page.locator(
+    (page.viewportSize()?.width ?? 0) <= 800
+      ? ".setup-mobile-brand .version-badge"
+      : ".hero .version-badge",
+  );
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText("vtest");
+});
+
+test("shows the build version on login", async ({ page }) => {
+  await page.route("**/api/v1/system/status", (route) =>
+    route.fulfill({ json: { initialized: true, appServer: false, version: "test" } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ status: 401, json: { error: "unauthorized" } }),
+  );
+  await page.goto("/");
+  const badge = page.locator(".login .version-badge");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText("vtest");
+});
+
 async function layout(page: Page) {
   return page.evaluate(() => {
     const box = (selector: string) => {

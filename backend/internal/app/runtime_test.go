@@ -23,6 +23,28 @@ func TestSystemStatusRejectsNonGETMethods(t *testing.T) {
 	}
 }
 
+func TestSystemStatusReturnsBuildVersion(t *testing.T) {
+	a := newReminderTestApp(t)
+	originalVersion := Version
+	Version = "1.2.3-test"
+	t.Cleanup(func() { Version = originalVersion })
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/status", nil)
+	a.api(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Version != "1.2.3-test" {
+		t.Fatalf("version = %q; want %q", body.Version, "1.2.3-test")
+	}
+}
+
 func TestDashboardSerializesNilListsAsEmptyArrays(t *testing.T) {
 	a := newReminderTestApp(t)
 	a.runtimes[1] = &accountRuntime{}
