@@ -202,6 +202,66 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
+test("keeps daily Token axis labels visible on narrow screens", async ({
+  page,
+}) => {
+  test.skip((page.viewportSize()?.width ?? 0) > 800, "mobile only");
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [
+            { date: "2026-08-11", totalTokens: 0 },
+            { date: "2026-08-12", totalTokens: 999_900 },
+            { date: "2026-08-13", totalTokens: 500_000 },
+          ],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const chart = page.locator(".chart");
+  await expect(
+    chart.getByRole("heading", { name: "每日 Token 趋势" }),
+  ).toBeVisible();
+  const labels = chart.locator(
+    ".recharts-yAxis .recharts-cartesian-axis-tick-value",
+  );
+  await expect(labels.first()).toBeVisible();
+  const geometry = await chart.evaluate((element) => {
+    const chartRect = element.getBoundingClientRect();
+    const ticks = Array.from(
+      element.querySelectorAll(
+        ".recharts-yAxis .recharts-cartesian-axis-tick-value",
+      ),
+    ).map((tick) => tick.getBoundingClientRect());
+    return {
+      chartLeft: chartRect.left,
+      tickLefts: ticks.map((tick) => tick.left),
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    };
+  });
+  expect(geometry.tickLefts.length).toBeGreaterThan(0);
+  expect(Math.min(...geometry.tickLefts)).toBeGreaterThanOrEqual(
+    geometry.chartLeft,
+  );
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+});
+
 test("mobile auxiliary menu closes with Escape and restores focus", async ({
   page,
 }) => {

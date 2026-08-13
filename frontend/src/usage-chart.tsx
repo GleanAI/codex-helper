@@ -35,7 +35,7 @@ export default function UsageChart({ data }: { data: Point[] }) {
         <AreaChart
           data={data}
           margin={
-            compact ? { top: 8, right: 4, bottom: 0, left: -8 } : undefined
+            compact ? { top: 8, right: 4, bottom: 0, left: 0 } : undefined
           }
         >
           <defs>
@@ -54,7 +54,7 @@ export default function UsageChart({ data }: { data: Point[] }) {
             minTickGap={compact ? 22 : 5}
           />
           <YAxis
-            width={compact ? 46 : 55}
+            width={55}
             tickCount={compact ? 4 : 5}
             tickFormatter={compactAxis}
             stroke="var(--muted)"
