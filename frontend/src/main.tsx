@@ -404,7 +404,7 @@ function LimitCard({ x }: { x: Limit }) {
     leftColor = `hsl(${left * 1.2} 70% 45%)`;
   return (
     <div className="panel limit">
-      <small>余额 · {x.windowType}</small>
+      <small>余额</small>
       <div className="remaining">
         <strong style={{ color: leftColor }}>
           {leftLabel}
