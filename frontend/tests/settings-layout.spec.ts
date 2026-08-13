@@ -70,7 +70,8 @@ async function openSettings(page: Page, version = "0.3.0-beta.1") {
 
 test("shows the build version in the authenticated brand", async ({ page }) => {
   await openSettings(page);
-  const brand = page.locator("aside .logo");
+  const mobile = (page.viewportSize()?.width ?? 0) <= 800;
+  const brand = page.locator(mobile ? ".mobile-topbar .logo" : "aside .logo");
   const badge = brand.locator(".version-badge");
   await expect(badge).toBeVisible();
   await expect(badge).toHaveText("v0.3.0-beta.1");
@@ -95,8 +96,8 @@ test("shows the build version in the authenticated brand", async ({ page }) => {
   });
   expect(Math.abs(layout.badgeCenter - layout.nameCenter)).toBeLessThan(1);
   expect(Math.abs(layout.iconCenter - layout.nameCenter)).toBeLessThan(1);
-  expect(layout.iconWidth).toBe(30);
-  expect(layout.iconHeight).toBe(30);
+  expect(layout.iconWidth).toBe(mobile ? 22 : 30);
+  expect(layout.iconHeight).toBe(mobile ? 22 : 30);
   expect(layout.iconFlexShrink).toBe("0");
 });
 
@@ -104,7 +105,11 @@ test("keeps the authenticated brand on one line with a release version", async (
   page,
 }) => {
   await openSettings(page, "0.2.0");
-  const brand = page.locator("aside .logo");
+  const brand = page.locator(
+    (page.viewportSize()?.width ?? 0) <= 800
+      ? ".mobile-topbar .logo"
+      : "aside .logo",
+  );
   await expect(brand).toContainText("Codex Helper");
   await expect(brand.locator(".version-badge")).toHaveText("v0.2.0");
   const centers = await brand
@@ -159,6 +164,8 @@ test("shows the build version on login", async ({ page }) => {
 
 test("shows the GitHub link after login", async ({ page }) => {
   await openSettings(page);
+  if ((page.viewportSize()?.width ?? 0) <= 800)
+    await page.getByRole("button", { name: "打开更多操作" }).click();
   const github = page.getByRole("link", {
     name: "在 GitHub 上查看 Codex Helper",
   });
@@ -167,6 +174,46 @@ test("shows the GitHub link after login", async ({ page }) => {
     "href",
     "https://github.com/zhoujun0601/codex-helper",
   );
+});
+
+test("mobile shell exposes accessible navigation without covering content", async ({
+  page,
+}) => {
+  test.skip((page.viewportSize()?.width ?? 0) > 800, "mobile only");
+  await openSettings(page);
+  const settings = page.getByRole("button", { name: "设置", exact: true });
+  await expect(settings).toHaveAttribute("aria-current", "page");
+  const nav = page.locator(".mobile-bottom-nav");
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const geometry = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+    navTop: document
+      .querySelector(".mobile-bottom-nav")!
+      .getBoundingClientRect().top,
+    contentBottom: document
+      .querySelector("#settings-panel-general .panel")!
+      .getBoundingClientRect().bottom,
+  }));
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.contentBottom).toBeLessThanOrEqual(geometry.navTop);
+  await expect(nav).toBeVisible();
+  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+});
+
+test("mobile auxiliary menu closes with Escape and restores focus", async ({
+  page,
+}) => {
+  test.skip((page.viewportSize()?.width ?? 0) > 800, "mobile only");
+  await openSettings(page);
+  const trigger = page.getByRole("button", { name: "打开更多操作" });
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("button", { name: "切换主题" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(trigger).toBeFocused();
 });
 
 test("automatically enables Telegram features and removes the configuration", async ({

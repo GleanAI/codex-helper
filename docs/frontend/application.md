@@ -8,6 +8,8 @@
 
 主题以服务端通用设置为持久来源，`localStorage` 仅用于首屏缓存；system 模式会跟随系统主题变化。当前账号 ID 保存到 `localStorage`。总览先加载账号列表，为当前账号加载 Dashboard，并在每轮请求完成 30 秒后刷新；切换账号会取消旧请求并校验响应账号，避免迟到响应覆盖当前账号。手动刷新调用账号级 sync 后重新读取 Dashboard。
 
+桌面端使用固定侧栏，`800px` 及以下改为紧凑顶栏和固定底部主导航；GitHub、主题和退出位于顶栏辅助菜单。移动布局最低支持 320px，使用动态视口高度和 CSS safe-area 环境变量避开 iOS 浏览器工具栏与设备安全区。内容必须为底部导航保留空间，表单控件避免 iOS 聚焦缩放，主要交互保持至少 44px 触控区域。
+
 ## API 客户端
 
 所有请求使用相对 `/api/v1/`、`credentials: same-origin` 和 `X-Requested-With: codex-helper`，仅 JSON body 设置 content type。请求支持取消和 timeout；非 2xx 响应转换为保留 status 的 `ApiError`，401 会统一回到登录界面。JSON 响应先作为 `unknown`，经端点 decoder 校验后进入组件。新增下载或非 JSON 响应不能直接套用当前 `api` helper。
@@ -22,4 +24,4 @@ API 类型精确区分后端 `null` 与 optional，并为秘密设置拆分读�
 
 ## 验证重点
 
-纯逻辑和组件测试使用 Vitest；Oxlint 检查 TypeScript/React 正确性，Prettier 检查格式，构建门禁限制单个 JavaScript chunk 不超过 500 KB。浏览器测试使用 Playwright 覆盖设置布局、键盘操作、隐藏表单隔离、账号删除、窄屏溢出、邮箱掩码、session 失效和跨账号竞态。修改 effect、轮询或异步加载时应覆盖卸载清理、错误状态及旧响应覆盖新状态；修改 CSS 时同时跑 desktop 和 mobile projects。
+纯逻辑和组件测试使用 Vitest；Oxlint 检查 TypeScript/React 正确性，Prettier 检查格式，构建门禁限制单个 JavaScript chunk 不超过 500 KB。浏览器测试使用 Playwright 的 desktop Chrome、Android Chrome 和 iOS WebKit 项目，覆盖设置布局、移动导航、键盘操作、隐藏表单隔离、账号删除、窄屏溢出、邮箱掩码、session 失效和跨账号竞态。修改 effect、轮询或异步加载时应覆盖卸载清理、错误状态及旧响应覆盖新状态；修改 CSS 时同时跑三个浏览器项目。

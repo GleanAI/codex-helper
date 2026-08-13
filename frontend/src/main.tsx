@@ -5,6 +5,7 @@ import {
   Navigate,
   Route,
   Routes,
+  useLocation,
   useNavigate,
 } from "react-router-dom";
 import {
@@ -14,6 +15,7 @@ import {
   Github,
   LogOut,
   Moon,
+  MoreHorizontal,
   RefreshCw,
   Settings,
   Sun,
@@ -201,51 +203,109 @@ function Login({ version }: { version: string }) {
 function Shell({ version }: { version: string }) {
   const { logout } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
   const { theme, saveTheme, error: themeError } = useTheme();
   const [shellError, setShellError] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => setMobileMenuOpen(false), [location.pathname]);
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!mobileMenuRef.current?.contains(event.target as Node))
+        setMobileMenuOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMobileMenuOpen(false);
+      mobileMenuButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [mobileMenuOpen]);
+  const changeTheme = () =>
+    void saveTheme(theme === "dark" ? "light" : "dark").catch(() => undefined);
+  const signOut = async () => {
+    if (!confirm("确定要退出 Codex Helper 管理后台吗？")) return;
+    try {
+      setShellError("");
+      await logout();
+    } catch (error) {
+      setShellError(toErrorMessage(error));
+    }
+  };
   return (
     <div className="app">
       <aside>
         <Brand version={version} />
         <nav>
-          <button onClick={() => nav("/")}>
+          <button
+            className={location.pathname === "/" ? "active" : ""}
+            aria-current={location.pathname === "/" ? "page" : undefined}
+            onClick={() => nav("/")}
+          >
             <Activity />
             总览
           </button>
-          <button onClick={() => nav("/settings")}>
+          <button
+            className={location.pathname === "/settings" ? "active" : ""}
+            aria-current={
+              location.pathname === "/settings" ? "page" : undefined
+            }
+            onClick={() => nav("/settings")}
+          >
             <Settings />
             设置中心
           </button>
         </nav>
         <div className="aside-bottom">
           <GitHubLink />
-          <button
-            onClick={() =>
-              void saveTheme(theme === "dark" ? "light" : "dark").catch(
-                () => undefined,
-              )
-            }
-          >
+          <button onClick={changeTheme}>
             {theme === "dark" ? <Sun /> : <Moon />}切换主题
           </button>
           {themeError && <small className="error">{themeError}</small>}
-          <button
-            onClick={async () => {
-              if (!confirm("确定要退出 Codex Helper 管理后台吗？")) return;
-              try {
-                setShellError("");
-                await logout();
-              } catch (error) {
-                setShellError(toErrorMessage(error));
-              }
-            }}
-          >
+          <button onClick={signOut}>
             <LogOut />
             退出
           </button>
           {shellError && <small className="error">{shellError}</small>}
         </div>
       </aside>
+      <div className="mobile-topbar">
+        <Brand version={version} />
+        <div className="mobile-menu" ref={mobileMenuRef}>
+          <button
+            ref={mobileMenuButtonRef}
+            className="mobile-menu-trigger secondary"
+            aria-label="打开更多操作"
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-actions"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            <MoreHorizontal />
+          </button>
+          {mobileMenuOpen && (
+            <div id="mobile-actions" className="mobile-menu-popover">
+              <GitHubLink />
+              <button onClick={changeTheme}>
+                {theme === "dark" ? <Sun /> : <Moon />}切换主题
+              </button>
+              <button onClick={signOut}>
+                <LogOut />
+                退出
+              </button>
+              {(themeError || shellError) && (
+                <small className="error">{themeError || shellError}</small>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
       <section className="content">
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -253,6 +313,24 @@ function Shell({ version }: { version: string }) {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </section>
+      <nav className="mobile-bottom-nav" aria-label="主导航">
+        <button
+          className={location.pathname === "/" ? "active" : ""}
+          aria-current={location.pathname === "/" ? "page" : undefined}
+          onClick={() => nav("/")}
+        >
+          <Activity />
+          <span>总览</span>
+        </button>
+        <button
+          className={location.pathname === "/settings" ? "active" : ""}
+          aria-current={location.pathname === "/settings" ? "page" : undefined}
+          onClick={() => nav("/settings")}
+        >
+          <Settings />
+          <span>设置</span>
+        </button>
+      </nav>
     </div>
   );
 }
