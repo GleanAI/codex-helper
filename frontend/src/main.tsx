@@ -340,7 +340,7 @@ function Dashboard() {
             {accounts.map((x) => (
               <option key={x.id} value={x.id}>
                 {x.displayName}
-                {x.email ? " · " + x.email : ""}
+                {x.email ? " · " + maskEmail(x.email) : ""}
               </option>
             ))}
           </select>
@@ -364,7 +364,9 @@ function Dashboard() {
         <div>
           <small>Codex Account</small>
           <b>
-            {d.displayName} · {d.account.email || "尚未连接"}
+            {d.displayName} · {d.account.email
+              ? maskEmail(d.account.email)
+              : "尚未连接"}
           </b>
         </div>
         <span className="badge">{planLabel(d.account.planType)}</span>
@@ -437,10 +439,6 @@ function LimitCard({ x }: { x: Limit }) {
         <em style={{ width: left + "%", background: leftColor }} />
         <i style={{ width: used + "%" }} />
       </div>
-      <footer>
-        <span>已使用 {usedLabel}%</span>
-        <span style={{ color: leftColor }}>剩余 {leftLabel}%</span>
-      </footer>
     </div>
   );
 }
@@ -812,7 +810,7 @@ function CodexSettings() {
                   }}
                 />
                 <div className="account-meta">
-                  <span>{x.email || "尚未登录"}</span>
+                  <span>{x.email ? maskEmail(x.email) : "尚未登录"}</span>
                   <span>{planLabel(x.planType)}</span>
                   <span className={x.validationStatus === "mismatch" ? "error" : ""}>
                     {validationLabel(x)}
@@ -1156,6 +1154,22 @@ const duration = (v?: number) =>
       : v < 3600
         ? `${Math.floor(v / 60)} 分 ${v % 60} 秒`
         : `${(v / 3600).toFixed(1)} 小时`;
+const maskEmailPart = (part: string) => {
+  if (part.length <= 1) return "*";
+  if (part.length === 2) return part[0] + "*";
+  return part[0] + "*".repeat(part.length - 2) + part.at(-1);
+};
+const maskEmail = (email: string) => {
+  const at = email.lastIndexOf("@");
+  if (at < 1 || at === email.length - 1) return maskEmailPart(email);
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1).split(".");
+  return `${maskEmailPart(local)}@${domain
+    .map((part, index) =>
+      index === domain.length - 1 ? part : maskEmailPart(part),
+    )
+    .join(".")}`;
+};
 const planLabel = (plan?: string) => {
   if (!plan) return "未识别套餐";
   const labels: Record<string, string> = {

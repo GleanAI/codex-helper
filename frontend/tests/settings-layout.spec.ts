@@ -169,3 +169,53 @@ test("Codex account cards fit within the viewport", async ({ page }) => {
   expect(overflow.documentWidth).toBeLessThanOrEqual(overflow.viewportWidth);
   expect(overflow.cardWidth).toBeLessThanOrEqual(overflow.contentWidth);
 });
+
+test("Codex account emails are masked everywhere they are displayed", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [
+            {
+              limitId: "primary",
+              windowType: "5h",
+              usedPercent: 25,
+              windowDurationMinutes: 300,
+              resetsAt: 0,
+            },
+          ],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".account-select")).toContainText("t**t@e*****e.com");
+  await expect(page.locator(".account b")).toContainText("t**t@e*****e.com");
+  await expect(page.getByText("已使用 25%", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("剩余 75%", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".bar")).toHaveAttribute(
+    "aria-label",
+    "5h：已使用 25%，剩余 75%",
+  );
+  await expect(page.locator("body")).not.toContainText("test@example.com");
+
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Codex" }).click();
+  await expect(page.locator(".account-meta").first()).toContainText("t**t@e*****e.com");
+  await expect(page.locator("body")).not.toContainText("test@example.com");
+});

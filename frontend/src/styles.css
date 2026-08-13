@@ -295,10 +295,10 @@ header p {
   gap: 18px;
 }
 .limit {
-  padding: 24px;
+  padding: 20px;
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 16px;
+  gap: 12px;
   align-items: start;
 }
 .limit > small {
@@ -343,18 +343,6 @@ header p {
 }
 .bar em {
   background: var(--green);
-}
-.limit footer {
-  grid-column: 1/-1;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
-  display: flex;
-  gap: 18px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.limit footer span:last-child {
-  margin-left: auto;
 }
 .green {
   color: var(--green);
@@ -682,8 +670,7 @@ a {
     text-align: left;
   }
   .limit > small,
-  .bar,
-  .limit footer {
+  .bar {
     grid-column: 1;
   }
 }
