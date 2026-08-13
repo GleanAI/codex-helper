@@ -4,7 +4,7 @@ services:
     image: codex-helper:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8180:8080"
     volumes:
       - codex-helper-data:/data
     environment:
