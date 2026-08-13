@@ -37,9 +37,22 @@ type App struct {
 	loginAttempts sync.Map
 }
 type accountRuntime struct {
-	client  *codex.Client
-	dash    Dashboard
-	syncing sync.Mutex
+	client     codexClient
+	processCtx context.Context
+	dash       Dashboard
+	syncing    sync.Mutex
+	lifecycle  sync.Mutex
+	stateMu    sync.RWMutex
+	ready      bool
+	stopped    bool
+}
+
+type codexClient interface {
+	Start(context.Context) error
+	Initialize(context.Context) error
+	Call(context.Context, string, any, any) error
+	Close() error
+	Connected() bool
 }
 
 func New() (*App, error) {
@@ -88,7 +101,7 @@ func (a *App) Close() {
 	_ = a.server.Shutdown(ctx)
 	a.mu.RLock()
 	for _, rt := range a.runtimes {
-		_ = rt.client.Close()
+		rt.stop()
 	}
 	a.mu.RUnlock()
 	_ = a.store.DB.Close()
@@ -108,21 +121,13 @@ func (a *App) keepCodex() {
 		a.mu.RUnlock()
 		for _, id := range ids {
 			rt := a.runtime(id)
-			if rt == nil || rt.client.Connected() {
+			if rt == nil || rt.Ready() {
 				continue
 			}
-			if e := rt.client.Start(a.ctx); e == nil {
-				ctx, c := context.WithTimeout(a.ctx, 20*time.Second)
-				e = rt.client.Initialize(ctx)
-				c()
-				if e == nil {
-					_ = a.syncAccount(context.Background(), id)
-				} else {
-					log.Printf("app-server initialize: %v", e)
-					// A live process is not necessarily an initialized process. Tear it
-					// down so the next iteration starts a fresh protocol session.
-					_ = rt.client.Close()
-				}
+			if e := rt.ensureReady(a.ctx); e == nil {
+				_ = a.syncAccount(context.Background(), id)
+			} else if !errors.Is(e, errRuntimeStopped) {
+				log.Printf("app-server initialize: %v", e)
 			}
 		}
 		time.Sleep(time.Second)
@@ -142,10 +147,69 @@ func (a *App) addRuntime(id int64) {
 		// existing login, and fresh installs use the same deterministic path.
 		dir = filepath.Join(a.dataDir, "codex")
 	}
-	rt := &accountRuntime{client: codex.New(dir, a.onCodexNotification(id)), dash: Dashboard{Limits: []LimitBucket{}, Usage: []UsagePoint{}, Stale: true}}
+	rt := &accountRuntime{client: codex.New(dir, a.onCodexNotification(id)), processCtx: a.ctx, dash: Dashboard{Limits: []LimitBucket{}, Usage: []UsagePoint{}, Stale: true}}
 	a.mu.Lock()
 	a.runtimes[id] = rt
 	a.mu.Unlock()
+}
+
+var errRuntimeStopped = errors.New("账号服务已停止")
+
+func (rt *accountRuntime) ensureReady(ctx context.Context) error {
+	rt.lifecycle.Lock()
+	defer rt.lifecycle.Unlock()
+	rt.stateMu.RLock()
+	stopped, ready := rt.stopped, rt.ready
+	rt.stateMu.RUnlock()
+	if stopped {
+		return errRuntimeStopped
+	}
+	if ready && rt.client.Connected() {
+		return nil
+	}
+	// Connected only means the child process is alive. If a previous attempt
+	// did not finish the protocol handshake, discard it before trying again.
+	rt.stateMu.Lock()
+	rt.ready = false
+	rt.stateMu.Unlock()
+	if rt.client.Connected() {
+		_ = rt.client.Close()
+	}
+	processCtx := rt.processCtx
+	if processCtx == nil {
+		processCtx = ctx
+	}
+	if err := rt.client.Start(processCtx); err != nil {
+		return err
+	}
+	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	err := rt.client.Initialize(initCtx)
+	cancel()
+	if err != nil {
+		_ = rt.client.Close()
+		return err
+	}
+	rt.stateMu.Lock()
+	rt.ready = true
+	rt.stateMu.Unlock()
+	return nil
+}
+
+func (rt *accountRuntime) Ready() bool {
+	rt.stateMu.RLock()
+	ready := !rt.stopped && rt.ready
+	rt.stateMu.RUnlock()
+	return ready && rt.client.Connected()
+}
+
+func (rt *accountRuntime) stop() {
+	rt.lifecycle.Lock()
+	defer rt.lifecycle.Unlock()
+	rt.stateMu.Lock()
+	rt.stopped = true
+	rt.ready = false
+	rt.stateMu.Unlock()
+	_ = rt.client.Close()
 }
 func (a *App) runtime(id int64) *accountRuntime {
 	a.mu.RLock()
@@ -192,7 +256,7 @@ func (a *App) routes() http.Handler {
 		connected := false
 		a.mu.RLock()
 		for _, rt := range a.runtimes {
-			if rt.client.Connected() {
+			if rt.Ready() {
 				connected = true
 				break
 			}

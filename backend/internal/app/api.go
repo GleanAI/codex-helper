@@ -21,7 +21,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		connected := false
 		a.mu.RLock()
 		for _, rt := range a.runtimes {
-			if rt.client.Connected() {
+			if rt.Ready() {
 				connected = true
 				break
 			}
@@ -178,7 +178,7 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		a.mu.Lock()
 		delete(a.runtimes, id)
 		a.mu.Unlock()
-		_ = rt.client.Close()
+		rt.stop()
 		e = a.store.DeleteAccount(id)
 		if e == nil {
 			dir := filepath.Join(a.dataDir, "accounts", strconv.FormatInt(id, 10))
@@ -194,7 +194,10 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		a.deviceLogin(w, r, id)
 	case action == "logout" && r.Method == "POST":
 		var out any
-		e = rt.client.Call(r.Context(), "account/logout", map[string]any{}, &out)
+		e = rt.ensureReady(r.Context())
+		if e == nil {
+			e = rt.client.Call(r.Context(), "account/logout", map[string]any{}, &out)
+		}
 		if e == nil {
 			_ = a.store.UpdateAccount(id, nil, nil, false)
 			jsonOut(w, 200, map[string]bool{"ok": true})
@@ -326,11 +329,14 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
 	var out map[string]any
 	rt := a.runtime(id)
-	if !rt.client.Connected() {
-		jsonOut(w, 503, map[string]string{"error": "该账号服务正在启动，请稍后重试"})
+	if rt == nil {
+		jsonOut(w, 404, map[string]string{"error": "账号不存在"})
 		return
 	}
-	e := rt.client.Call(r.Context(), "account/login/start", map[string]any{"type": "chatgptDeviceCode"}, &out)
+	e := rt.ensureReady(r.Context())
+	if e == nil {
+		e = rt.client.Call(r.Context(), "account/login/start", map[string]any{"type": "chatgptDeviceCode"}, &out)
+	}
 	if e != nil {
 		jsonOut(w, 502, map[string]string{"error": e.Error()})
 		return
@@ -345,8 +351,8 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 	}
 	rt.syncing.Lock()
 	defer rt.syncing.Unlock()
-	if !rt.client.Connected() {
-		return fmt.Errorf("app-server 未连接")
+	if err := rt.ensureReady(ctx); err != nil {
+		return err
 	}
 	ctx, c := context.WithTimeout(ctx, 20*time.Second)
 	defer c()
