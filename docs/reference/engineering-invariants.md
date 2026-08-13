@@ -33,7 +33,7 @@
 
 ## 前端与部署
 
-- 所有可见邮箱继续掩码。账号切换清空旧 Dashboard；删除账号清除设备码和 localStorage 选择。
+- Web 界面中的所有可见账号邮箱继续掩码；Telegram `/account` 当前会向已绑定会话显示完整邮箱。账号切换清空旧 Dashboard；删除账号清除设备码和 localStorage 选择。
 - 非活动设置 panel 保持 `inert`，tab 键盘和布局稳定性是现有可访问性契约。
 - 前端生产资源嵌入 Go 二进制；Docker build stage 的复制顺序变化必须验证实际嵌入的是新产物。
 - `/data` 是唯一完整恢复单元。数据库快照不含 `secret.key` 和 Codex 凭据；任何文档不得暗示其可完整灾难恢复。

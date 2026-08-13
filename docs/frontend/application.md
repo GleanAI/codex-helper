@@ -12,7 +12,7 @@
 
 所有请求使用相对 `/api/v1/`、`credentials: same-origin`、JSON content type 和 `X-Requested-With: codex-helper`。非 2xx 响应优先显示 `{error}`，否则退化为 HTTP 状态。新增下载或非 JSON 响应不能直接套用当前 `api` helper。
 
-后端的 optional、`null`、空数组及 unknown 套餐必须在 TypeScript 中准确表达。邮箱在账号选择器、总览和设置中统一经过 `maskEmail`；不得把未掩码邮箱添加到新的可见位置。
+当前 `main.tsx` 的 API 类型将部分后端 `null` 值建模为 optional，渲染层通过 truthy 检查同时兼容 `undefined` 和 `null`；空数组及 unknown 套餐按后端返回值处理。邮箱在 Web 界面的账号选择器、总览和设置中统一经过 `maskEmail`；不得把未掩码邮箱添加到新的 Web 可见位置。Telegram `/account` 是独立的已绑定会话输出，当前显示完整邮箱。
 
 ## 总览与设置
 

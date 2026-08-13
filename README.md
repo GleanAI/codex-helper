@@ -40,7 +40,7 @@ docker compose logs -f codex-helper
 容器健康后访问：
 
 ```text
-http://服务器地址:8080
+http://服务器地址:8180
 ```
 
 首次打开页面时创建管理员账号，并设置所在时区。用户名至少 3 位，密码至少 10 位。
@@ -91,7 +91,7 @@ http://服务器地址:8080
 
 7. 收到“绑定成功”后，返回页面点击“发送测试”。
 
-绑定码十分钟内有效，一个实例只绑定一个 Telegram 会话。即使关闭查询菜单，仍可完成绑定并接收提醒；开启菜单后可使用以下按钮或命令：
+绑定码十分钟内有效，一个实例只绑定一个 Telegram 会话。即使关闭查询菜单，仍可完成绑定并接收提醒；开启菜单后可使用以下按钮或命令。`/account` 会向已绑定会话显示账号的完整邮箱，因此只应绑定受信任的私有会话。
 
 - 当前用量（包含所有已添加连接）
 - 重置时间 / `/reset`
@@ -138,8 +138,8 @@ docker compose logs --tail=200 codex-helper
 健康检查：
 
 ```bash
-curl http://localhost:8080/health/live
-curl http://localhost:8080/health/ready
+curl http://localhost:8180/health/live
+curl http://localhost:8180/health/ready
 ```
 
 ## 数据、备份与恢复
@@ -153,7 +153,7 @@ curl http://localhost:8080/health/ready
 登录管理页面后，可直接在浏览器访问以下地址下载一致性 SQLite 快照：
 
 ```text
-http://服务器地址:8080/api/v1/maintenance/backup
+http://服务器地址:8180/api/v1/maintenance/backup
 ```
 
 SQLite 快照不包含 `secret.key` 和 `codex/`。完整灾难恢复必须同时备份整个 `/data` 数据卷；恢复时先停止容器，再恢复全部内容，并确保文件所有者仍可被容器中的 UID `10001` 读取。
