@@ -41,6 +41,9 @@ func (c *Client) Start(ctx context.Context) error {
 	if c.connected {
 		return nil
 	}
+	if e := ensureConfigDir(c.configDir); e != nil {
+		return e
+	}
 	cmd := exec.CommandContext(ctx, "codex", "app-server")
 	cmd.Env = append(os.Environ(), "CODEX_HOME="+c.configDir)
 	out, e := cmd.StdoutPipe()
@@ -58,6 +61,13 @@ func (c *Client) Start(ctx context.Context) error {
 	c.cmd, c.in, c.connected = cmd, in, true
 	go c.read(cmd, out)
 	go func() { _ = cmd.Wait(); c.failAll(cmd) }()
+	return nil
+}
+
+func ensureConfigDir(dir string) error {
+	if e := os.MkdirAll(dir, 0700); e != nil {
+		return fmt.Errorf("create CODEX_HOME %q: %w", dir, e)
+	}
 	return nil
 }
 func (c *Client) Initialize(ctx context.Context) error {
