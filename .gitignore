@@ -1,0 +1,8 @@
+frontend/node_modules/
+backend/internal/web/dist/*
+!backend/internal/web/dist/index.html
+*.db
+*.db-shm
+*.db-wal
+.env
+*.tsbuildinfo

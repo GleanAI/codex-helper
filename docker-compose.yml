@@ -1,0 +1,13 @@
+services:
+  codex-helper:
+    build: .
+    image: codex-helper:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - codex-helper-data:/data
+    environment:
+      LISTEN_ADDR: ":8080"
+volumes:
+  codex-helper-data:

@@ -1,0 +1,6 @@
+.git
+frontend/node_modules
+*.db
+.DS_Store
+coverage
+*.tsbuildinfo
