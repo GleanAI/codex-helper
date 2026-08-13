@@ -56,8 +56,45 @@ func TestStoreLimitSnapshotsDetectsEarlyReset(t *testing.T) {
 	if err := a.store.DB.QueryRow("SELECT kind,body FROM notifications").Scan(&kind, &body); err != nil {
 		t.Fatal(err)
 	}
-	if kind != "detected_after" || !strings.Contains(body, "42.0% → 3.0%") || !strings.Contains(body, "测试账号") {
+	event, ok := decodeNotification(body)
+	if kind != "detected_after" || !ok || event.PreviousUsed != 42 || event.Used != 3 || event.Account != "测试账号" {
 		t.Fatalf("notification kind=%q body=%q", kind, body)
+	}
+}
+
+func TestNotificationFormatting(t *testing.T) {
+	if got := limitLabel(300); got != "5 小时额度" {
+		t.Fatalf("300 minute label = %q", got)
+	}
+	if got := limitLabel(10080); got != "7 天额度" {
+		t.Fatalf("7 day label = %q", got)
+	}
+	reset := time.Date(2026, 8, 20, 3, 51, 0, 0, time.UTC)
+	now := reset.Add(-2*time.Hour - 15*time.Minute)
+	event := notificationEvent{Version: 1, Kind: "before", Account: "A < B", DurationMins: 300, Remaining: 27.5, ResetsAt: reset.Unix()}
+	plain, telegram, subject, email := renderNotification(event, "", "Asia/Shanghai", now)
+	for _, value := range []string{plain, telegram, email} {
+		if strings.Contains(value, "codex/primary") || strings.Contains(value, "2026-08-20T03:51:00Z") {
+			t.Fatalf("internal label or RFC3339 leaked: %q", value)
+		}
+	}
+	if subject != "Codex 即将重置" || !strings.Contains(telegram, "Codex 即将重置") || !strings.Contains(telegram, "8月20日 周四 11:51") || !strings.Contains(telegram, "还有 2 小时 15 分") {
+		t.Fatalf("telegram = %q subject = %q", telegram, subject)
+	}
+	if !strings.Contains(telegram, "A &lt; B") || !strings.Contains(email, "multipart") && !strings.Contains(email, "Codex Helper") {
+		t.Fatalf("output was not escaped or rendered: telegram=%q email=%q", telegram, email)
+	}
+}
+
+func TestLegacyNotificationFormatting(t *testing.T) {
+	legacy := "旧消息 <保留>"
+	event, ok := decodeNotification(legacy)
+	if ok {
+		t.Fatal("legacy notification decoded as structured")
+	}
+	plain, telegram, subject, email := renderNotification(event, legacy, "UTC", time.Now())
+	if plain != legacy || telegram != "旧消息 &lt;保留&gt;" || subject != "Codex 额度重置提醒" || !strings.Contains(email, "旧消息 &lt;保留&gt;") {
+		t.Fatalf("legacy render mismatch: %q %q %q", plain, telegram, subject)
 	}
 }
 

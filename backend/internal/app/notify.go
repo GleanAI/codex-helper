@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -14,6 +16,17 @@ import (
 	"strings"
 	"time"
 )
+
+type notificationEvent struct {
+	Version      int     `json:"version"`
+	Kind         string  `json:"kind"`
+	Account      string  `json:"account"`
+	DurationMins int     `json:"durationMinutes"`
+	Remaining    float64 `json:"remainingPercent"`
+	PreviousUsed float64 `json:"previousUsedPercent,omitempty"`
+	Used         float64 `json:"usedPercent,omitempty"`
+	ResetsAt     int64   `json:"resetsAt"`
+}
 
 func (a *App) smtpSettings() SMTPSettings {
 	var s SMTPSettings
@@ -75,7 +88,7 @@ func (a *App) smtpAPI(w http.ResponseWriter, r *http.Request) {
 func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 	s, e := a.smtpSecret()
 	if e == nil {
-		e = sendSMTP(s, "Codex Helper 测试邮件", "SMTP 配置成功，后续用量重置提醒将发送到此邮箱。")
+		e = sendSMTP(s, "Codex Helper 测试成功", "SMTP 配置成功，后续额度重置提醒将发送到此邮箱。", testEmailHTML(a.general().Timezone))
 	}
 	if e != nil {
 		jsonOut(w, 502, map[string]string{"error": e.Error()})
@@ -83,7 +96,7 @@ func (a *App) smtpTest(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
-func sendSMTP(s SMTPSettings, subject, body string) error {
+func sendSMTP(s SMTPSettings, subject, textBody, htmlBody string) error {
 	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 	var c *smtp.Client
 	var e error
@@ -124,7 +137,9 @@ func sendSMTP(s SMTPSettings, subject, body string) error {
 	if name == "" {
 		name = "Codex Helper"
 	}
-	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s", name, s.From, s.To, subject, body)
+	boundary := "codex-helper-alternative"
+	encodedSubject := "=?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(subject)) + "?="
+	msg := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=%q\r\n\r\n--%s\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n--%s\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n%s\r\n--%s--\r\n", name, s.From, s.To, encodedSubject, boundary, boundary, textBody, boundary, htmlBody, boundary)
 	if _, e = w.Write([]byte(msg)); e != nil {
 		return e
 	}
@@ -191,7 +206,7 @@ func (a *App) telegramTest(w http.ResponseWriter, r *http.Request) {
 		if t.ChatID == 0 {
 			e = fmt.Errorf("请先绑定 Chat ID")
 		} else {
-			e = tgSend(t, "Codex Helper Telegram 配置成功。")
+			e = tgSend(t, "✅ <b>Telegram 测试成功</b>\n\n后续额度重置提醒将发送到此会话。")
 		}
 	}
 	if e != nil {
@@ -220,7 +235,7 @@ func tgCall(token, method string, p any, out any) error {
 }
 func tgSend(t TelegramSettings, text string) error {
 	var out any
-	params := map[string]any{"chat_id": t.ChatID, "text": text}
+	params := map[string]any{"chat_id": t.ChatID, "text": text, "parse_mode": "HTML"}
 	if t.MenuEnabled {
 		params["reply_markup"] = map[string]any{"keyboard": [][]map[string]string{{{"text": "当前用量"}, {"text": "重置时间"}}, {{"text": "历史概览"}, {"text": "账户信息"}}, {{"text": "立即刷新"}}}, "resize_keyboard": true}
 	}
@@ -276,9 +291,9 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 			_ = a.store.SetJSON("telegram", safe)
 			_ = a.store.Set("telegram_bind", "{}")
 			t.ChatID = chat
-			message := "绑定成功。Codex 用量提醒将发送到此会话。"
+			message := "✅ <b>绑定成功</b>\n\nCodex 额度提醒将发送到此会话。"
 			if t.MenuEnabled {
-				message = "绑定成功。现在可以使用菜单查询 Codex 用量。"
+				message = "✅ <b>绑定成功</b>\n\n现在可以使用菜单查询 Codex 额度信息。"
 			}
 			_ = tgSend(t, message)
 		}
@@ -293,7 +308,7 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 	if text == "立即刷新" || text == "/refresh" {
 		a.syncAll(context.Background())
 	}
-	msg := "Codex 用量\n"
+	msg := ""
 	a.mu.RLock()
 	ds := make([]Dashboard, 0, len(a.runtimes))
 	for _, rt := range a.runtimes {
@@ -304,31 +319,39 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 	a.mu.RUnlock()
 	switch text {
 	case "重置时间", "/reset":
+		msg = "⏰ <b>Codex 重置时间</b>\n"
 		for _, d := range ds {
-			msg += "[" + d.DisplayName + "]\n"
+			msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
 			for _, x := range d.Limits {
-				msg += fmt.Sprintf("%s/%s：%s\n", x.LimitID, x.WindowType, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+				msg += fmt.Sprintf("• %s\n  <b>%s</b>\n  %s\n", limitLabel(x.WindowDurationMinutes), formatTime(x.ResetsAt, a.general().Timezone), relativeTime(x.ResetsAt, time.Now()))
 			}
 		}
 	case "账户信息", "/account":
+		msg = "👤 <b>Codex 账户信息</b>\n"
 		for _, d := range ds {
-			msg += fmt.Sprintf("[%s] 连接：%v\n", d.DisplayName, d.Account.Connected)
+			status := "断开"
+			if d.Account.Connected {
+				status = "正常"
+			}
+			msg += fmt.Sprintf("\n<b>%s</b>\n连接：%s\n", html.EscapeString(d.DisplayName), status)
 			if d.Account.Email != nil {
-				msg += "账户：" + *d.Account.Email + "\n"
+				msg += "账户：" + html.EscapeString(*d.Account.Email) + "\n"
 			}
 			if d.Account.PlanType != nil {
-				msg += "套餐：" + *d.Account.PlanType + "\n"
+				msg += "套餐：" + html.EscapeString(*d.Account.PlanType) + "\n"
 			}
 		}
 	case "历史概览", "/usage":
+		msg = "📈 <b>Codex 历史概览</b>\n"
 		for _, d := range ds {
-			msg += fmt.Sprintf("[%s] Lifetime tokens：%s，历史天数：%d\n", d.DisplayName, num(d.Summary.LifetimeTokens), len(d.Usage))
+			msg += fmt.Sprintf("\n<b>%s</b>\n累计 Tokens：%s\n历史天数：%d 天\n", html.EscapeString(d.DisplayName), num(d.Summary.LifetimeTokens), len(d.Usage))
 		}
 	default:
+		msg = "📊 <b>Codex 当前用量</b>\n"
 		for _, d := range ds {
-			msg += "[" + d.DisplayName + "]\n"
+			msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
 			for _, x := range d.Limits {
-				msg += fmt.Sprintf("%s/%s：剩余 %.1f%%，重置 %s\n", x.LimitID, x.WindowType, 100-x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+				msg += fmt.Sprintf("• %s：<b>剩余 %.1f%%</b>\n  重置：%s（%s）\n", limitLabel(x.WindowDurationMinutes), 100-x.UsedPercent, formatTime(x.ResetsAt, a.general().Timezone), relativeTime(x.ResetsAt, time.Now()))
 			}
 		}
 	}
@@ -370,10 +393,11 @@ func (a *App) processReminders() {
 					continue
 				}
 				key := fmt.Sprintf("%d:%s:%s:%d:%s", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt, kind)
-				body := fmt.Sprintf("Codex [%s] %s/%s 剩余 %.1f%%，重置时间 %s。", d.DisplayName, x.LimitID, x.WindowType, 100-x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+				event := notificationEvent{Version: 1, Kind: kind, Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
+				body, _ := json.Marshal(event)
 				_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
 					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-					VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, at.Unix(), body)
+					VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, at.Unix(), string(body))
 			}
 		}
 	}
@@ -399,16 +423,21 @@ func (a *App) sendPendingReminders(now time.Time) {
 	}
 	_ = rows.Close()
 	for _, p := range pending {
+		event, structured := decodeNotification(p.body)
+		textBody, telegramBody, subject, htmlBody := renderNotification(event, p.body, a.general().Timezone, now)
 		ok := true
 		errs := []string{}
 		if t, e := a.telegramSecret(); e == nil && t.Enabled && t.ChatID != 0 {
-			if e = tgSend(t, p.body); e != nil {
+			if e = tgSend(t, telegramBody); e != nil {
 				ok = false
 				errs = append(errs, e.Error())
 			}
 		}
 		if s, e := a.smtpSecret(); e == nil && s.Enabled {
-			if e = sendSMTP(s, "Codex 用量重置提醒", p.body); e != nil {
+			if !structured {
+				subject = "Codex 额度重置提醒"
+			}
+			if e = sendSMTP(s, subject, textBody, htmlBody); e != nil {
 				ok = false
 				errs = append(errs, e.Error())
 			}
@@ -422,6 +451,99 @@ func (a *App) sendPendingReminders(now time.Time) {
 		_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=attempts+1,last_error=?,sent_at=? WHERE dedupe_key=?`,
 			status, strings.Join(errs, "; "), sent, p.key)
 	}
+}
+
+func decodeNotification(body string) (notificationEvent, bool) {
+	var event notificationEvent
+	err := json.Unmarshal([]byte(body), &event)
+	return event, err == nil && event.Version == 1
+}
+
+func limitLabel(minutes int) string {
+	switch {
+	case minutes <= 0:
+		return "Codex 额度"
+	case minutes%1440 == 0:
+		return fmt.Sprintf("%d 天额度", minutes/1440)
+	case minutes%60 == 0:
+		return fmt.Sprintf("%d 小时额度", minutes/60)
+	default:
+		return fmt.Sprintf("%d 分钟额度", minutes)
+	}
+}
+
+func location(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+var weekdays = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+
+func formatTime(ts int64, zone string) string {
+	t := time.Unix(ts, 0).In(location(zone))
+	date := fmt.Sprintf("%d月%d日 %s %02d:%02d", t.Month(), t.Day(), weekdays[t.Weekday()], t.Hour(), t.Minute())
+	if t.Year() != time.Now().In(t.Location()).Year() {
+		return fmt.Sprintf("%d年%s", t.Year(), date)
+	}
+	return date
+}
+
+func relativeTime(ts int64, now time.Time) string {
+	d := time.Unix(ts, 0).Sub(now)
+	if d <= 0 {
+		if d > -time.Minute {
+			return "刚刚重置"
+		}
+		return "已重置"
+	}
+	minutes := int(d.Round(time.Minute) / time.Minute)
+	if minutes < 1 {
+		return "不到 1 分钟后"
+	}
+	days, hours, mins := minutes/1440, minutes%1440/60, minutes%60
+	if days > 0 {
+		return fmt.Sprintf("还有 %d 天 %d 小时", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("还有 %d 小时 %d 分", hours, mins)
+	}
+	return fmt.Sprintf("还有 %d 分钟", mins)
+}
+
+func renderNotification(event notificationEvent, legacy, zone string, now time.Time) (string, string, string, string) {
+	if event.Version != 1 {
+		escaped := html.EscapeString(legacy)
+		return legacy, escaped, "Codex 额度重置提醒", emailCard("额度重置提醒", escaped, "", zone, "#2563eb")
+	}
+	after := event.Kind == "after" || event.Kind == "detected_after" || (event.Kind == "before" && event.ResetsAt <= now.Unix())
+	title, icon, color := "Codex 即将重置", "⏰", "#2563eb"
+	detail := fmt.Sprintf("剩余 %.1f%%", event.Remaining)
+	if after {
+		title, icon, color = "Codex 额度已重置", "✅", "#059669"
+		if event.Kind == "detected_after" {
+			detail = fmt.Sprintf("已用 %.1f%% → %.1f%%", event.PreviousUsed, event.Used)
+		} else {
+			detail = fmt.Sprintf("当前已用 %.1f%%", event.Used)
+		}
+	}
+	when := formatTime(event.ResetsAt, zone)
+	relative := relativeTime(event.ResetsAt, now)
+	label := limitLabel(event.DurationMins)
+	plain := fmt.Sprintf("%s\n\n账号：%s\n额度：%s\n%s\n下次重置：%s\n%s\n时区：%s", title, event.Account, label, detail, when, relative, zone)
+	tg := fmt.Sprintf("%s <b>%s</b>\n\n<b>%s</b>\n%s：<b>%s</b>\n\n下次重置\n<b>%s</b>\n%s", icon, title, html.EscapeString(event.Account), label, detail, when, relative)
+	content := fmt.Sprintf("<div style=\"font-size:14px;color:#64748b;margin-bottom:8px\">%s · %s</div><div style=\"font-size:24px;font-weight:700;color:#0f172a\">%s</div>", html.EscapeString(event.Account), label, detail)
+	return plain, tg, title, emailCard(title, content, when+" · "+relative, zone, color)
+}
+
+func emailCard(title, content, prominent, zone, color string) string {
+	return fmt.Sprintf(`<!doctype html><html><body style="margin:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a"><div style="max-width:560px;margin:36px auto;padding:0 16px"><div style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 8px 30px rgba(15,23,42,.08)"><div style="height:6px;background:%s"></div><div style="padding:30px"><div style="font-size:22px;font-weight:700;margin-bottom:24px">%s</div>%s<div style="margin-top:24px;padding:18px;border-radius:12px;background:#f8fafc"><div style="font-size:12px;color:#64748b;margin-bottom:6px">下次重置时间</div><div style="font-size:20px;font-weight:700;color:%s">%s</div></div></div><div style="padding:16px 30px;background:#f8fafc;font-size:12px;color:#94a3b8">Codex Helper · 时区 %s</div></div></div></body></html>`, color, html.EscapeString(title), content, color, html.EscapeString(prominent), html.EscapeString(zone))
+}
+
+func testEmailHTML(zone string) string {
+	return emailCard("✅ SMTP 测试成功", "<div style=\"color:#475569\">邮件通知已配置完成，后续额度重置提醒将发送到此邮箱。</div>", "配置正常", zone, "#059669")
 }
 
 var _ = bufio.ErrInvalidUnreadByte

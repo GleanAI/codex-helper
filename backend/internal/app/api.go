@@ -489,11 +489,12 @@ func (a *App) storeLimitSnapshots(d Dashboard) (bool, error) {
 				kind = "after"
 				key = fmt.Sprintf("%d:%s:%s:%d:after", d.AccountID, x.LimitID, x.WindowType, previousResetsAt)
 			}
-			body := fmt.Sprintf("Codex [%s] %s/%s 额度已重置：已用 %.1f%% → %.1f%%，下次重置时间 %s。",
-				d.DisplayName, x.LimitID, x.WindowType, previousUsed, x.UsedPercent, time.Unix(x.ResetsAt, 0).Format(time.RFC3339))
+			event := notificationEvent{Version: 1, Kind: kind, Account: d.DisplayName, DurationMins: x.WindowDurationMinutes,
+				Remaining: 100 - x.UsedPercent, PreviousUsed: previousUsed, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
+			body, _ := json.Marshal(event)
 			_, err = tx.Exec(`INSERT OR IGNORE INTO notifications
 				(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-				VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, d.FetchedAt, body)
+				VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, d.FetchedAt, string(body))
 			if err != nil {
 				return false, err
 			}
