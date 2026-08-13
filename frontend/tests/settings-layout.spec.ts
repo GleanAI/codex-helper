@@ -111,3 +111,61 @@ test("programmatic tab changes do not clamp an existing scroll position", async 
   await expect.poll(async () => (await layout(page)).scrollY).toBe(before.scrollY);
   await expect.poll(async () => (await layout(page)).content).toEqual(before.content);
 });
+
+test("deleting a newly added account clears its device authorization", async ({ page }) => {
+  let accounts: Array<(typeof responses.accounts)[number]> = [];
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const key = new URL(request.url()).pathname.replace("/api/v1/", "");
+    if (key === "accounts" && request.method() === "GET")
+      return route.fulfill({ json: accounts });
+    if (key === "accounts" && request.method() === "POST") {
+      const account = {
+        ...responses.accounts[0],
+        id: 2,
+        displayName: "账号 1",
+        email: "",
+        connected: false,
+        validationStatus: "pending" as const,
+      };
+      accounts = [account];
+      return route.fulfill({ json: account });
+    }
+    if (key === "accounts/2/login/device")
+      return route.fulfill({
+        json: {
+          verificationUrl: "https://auth.openai.com/codex/device",
+          userCode: "PLTJ-7M6I6",
+        },
+      });
+    if (key === "accounts/2" && request.method() === "DELETE") {
+      accounts = [];
+      return route.fulfill({ json: { ok: true } });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Codex" }).click();
+  await page.getByRole("button", { name: "添加账号" }).click();
+  await expect(page.getByText("PLTJ-7M6I6")).toBeVisible();
+  await expect(page.getByRole("link", { name: "https://auth.openai.com/codex/device" })).toBeVisible();
+
+  await page.getByRole("button", { name: "删除“账号 1”" }).click();
+  await expect(page.getByText("PLTJ-7M6I6")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "https://auth.openai.com/codex/device" })).toHaveCount(0);
+  await expect(page.getByText("尚未添加 Codex 账号", { exact: false })).toBeVisible();
+});
+
+test("Codex account cards fit within the viewport", async ({ page }) => {
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Codex" }).click();
+  const overflow = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+    cardWidth: document.querySelector(".account-card")!.getBoundingClientRect().width,
+    contentWidth: document.querySelector(".settings-content")!.getBoundingClientRect().width,
+  }));
+  expect(overflow.documentWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+  expect(overflow.cardWidth).toBeLessThanOrEqual(overflow.contentWidth);
+});

@@ -52,6 +52,11 @@ type Account = {
   possibleDuplicate: boolean;
   connected: boolean;
 };
+type DeviceLogin = {
+  accountId: number;
+  verificationUrl: string;
+  userCode: string;
+};
 type Dash = {
   accountId: number;
   displayName: string;
@@ -685,7 +690,7 @@ function General() {
 }
 function CodexSettings() {
   const [xs, setXs] = useState<Account[]>([]),
-    [result, setResult] = useState<any>(null),
+    [deviceLogin, setDeviceLogin] = useState<DeviceLogin | null>(null),
     [active, setActive] = useState(0),
     [newKind, setNewKind] = useState<"personal" | "team">("team"),
     [busy, setBusy] = useState(false),
@@ -695,13 +700,17 @@ function CodexSettings() {
     load();
   }, []);
   useEffect(() => {
-    if (!result || !active) return;
+    if (!deviceLogin) return;
     const started = Date.now();
     const timer = setInterval(async () => {
       const accounts = await load();
-      const account = accounts.find((x) => x.id === active);
+      const account = accounts.find((x) => x.id === deviceLogin.accountId);
+      if (!account) {
+        setDeviceLogin(null);
+        clearInterval(timer);
+        return;
+      }
       if (
-        account &&
         ["matched", "mismatch"].includes(account.validationStatus)
       )
         clearInterval(timer);
@@ -709,13 +718,17 @@ function CodexSettings() {
         clearInterval(timer);
     }, 2000);
     return () => clearInterval(timer);
-  }, [result, active]);
+  }, [deviceLogin]);
   const login = async (id: number) => {
     try {
       setBusy(true);
       setActive(id);
       setErr("");
-      setResult(await post(`accounts/${id}/login/device`));
+      setDeviceLogin(null);
+      const result = await post<Omit<DeviceLogin, "accountId">>(
+        `accounts/${id}/login/device`,
+      );
+      setDeviceLogin({ accountId: id, ...result });
     } catch (q) {
       setErr((q as Error).message);
     } finally {
@@ -727,13 +740,17 @@ function CodexSettings() {
       setBusy(true);
       setActive(0);
       setErr("");
+      setDeviceLogin(null);
       const x = await post<Account>("accounts", {
         displayName: `账号 ${xs.length + 1}`,
         expectedKind: newKind,
       });
       await load();
       setActive(x.id);
-      setResult(await post(`accounts/${x.id}/login/device`));
+      const result = await post<Omit<DeviceLogin, "accountId">>(
+        `accounts/${x.id}/login/device`,
+      );
+      setDeviceLogin({ accountId: x.id, ...result });
     } catch (q) {
       setErr((q as Error).message);
     } finally {
@@ -741,128 +758,151 @@ function CodexSettings() {
     }
   };
   return (
-    <div className="panel form wide">
-      <div className="settings-title">
-        <div>
-          <h2>Codex 账户与工作区</h2>
-          <p>
-            个人订阅和 Team 工作区请分别添加为独立连接；同一邮箱可以添加多次。
-          </p>
-        </div>
-        <label>
-          新连接类型
-          <select
-            value={newKind}
-            onChange={(e) =>
-              setNewKind(e.target.value as "personal" | "team")
-            }
-          >
-            <option value="team">Team / Business 工作区</option>
-            <option value="personal">个人订阅</option>
-          </select>
-        </label>
-        <button disabled={busy} onClick={add}>
-          {busy && active === 0 ? "服务启动中…" : "添加账号"}
-        </button>
+    <div className="codex-settings wide">
+      <div className="codex-heading">
+        <h2>Codex 账户与工作区</h2>
+        <p>个人订阅和 Team 工作区请分别添加为独立连接；同一邮箱可以添加多次。</p>
       </div>
+      <section className="panel add-account-card">
+        <div>
+          <h3>添加新连接</h3>
+          <p>选择要连接的订阅类型，然后使用设备码完成授权。</p>
+        </div>
+        <div className="add-account-controls">
+          <label>
+            连接类型
+            <select
+              value={newKind}
+              onChange={(e) =>
+                setNewKind(e.target.value as "personal" | "team")
+              }
+            >
+              <option value="team">Team / Business 工作区</option>
+              <option value="personal">个人订阅</option>
+            </select>
+          </label>
+          <button disabled={busy} onClick={add}>
+            {busy && active === 0 ? "服务启动中…" : "添加账号"}
+          </button>
+        </div>
+      </section>
       <div className="account-list">
+        {xs.length === 0 && (
+          <div className="panel empty account-empty">
+            尚未添加 Codex 账号，请使用上方的“添加账号”创建连接。
+          </div>
+        )}
         {xs.map((x) => (
-          <div className="account-row" key={x.id}>
-            <span className={"dot " + (x.connected ? "ok" : "")} />
-            <div>
-              <input
-                aria-label="连接名称"
-                defaultValue={x.displayName}
-                onBlur={async (e) => {
-                  const name = e.target.value.trim();
-                  if (name && name !== x.displayName) {
+          <section className="panel account-card" key={x.id}>
+            <div className="account-card-main">
+              <span className={"dot " + (x.connected ? "ok" : "")} />
+              <div className="account-details">
+                <input
+                  aria-label="连接名称"
+                  defaultValue={x.displayName}
+                  onBlur={async (e) => {
+                    const name = e.target.value.trim();
+                    if (name && name !== x.displayName) {
+                      await put(`accounts/${x.id}`, {
+                        displayName: name,
+                        expectedKind: x.expectedKind,
+                      });
+                      load();
+                    }
+                  }}
+                />
+                <div className="account-meta">
+                  <span>{x.email || "尚未登录"}</span>
+                  <span>{planLabel(x.planType)}</span>
+                  <span className={x.validationStatus === "mismatch" ? "error" : ""}>
+                    {validationLabel(x)}
+                  </span>
+                </div>
+                {x.possibleDuplicate && (
+                  <small className="hint">
+                    同一邮箱已有相同类型连接，请确认没有重复授权同一工作区
+                  </small>
+                )}
+              </div>
+            </div>
+            <div className="account-card-actions">
+              <label>
+                预期连接类型
+                <select
+                  aria-label="预期连接类型"
+                  value={x.expectedKind}
+                  onChange={async (e) => {
                     await put(`accounts/${x.id}`, {
-                      displayName: name,
-                      expectedKind: x.expectedKind,
+                      displayName: x.displayName,
+                      expectedKind: e.target.value,
                     });
                     load();
-                  }
-                }}
-              />
-              <small>
-                {x.email || "尚未登录"} · {planLabel(x.planType)}
-              </small>
-              <small className={x.validationStatus === "mismatch" ? "error" : ""}>
-                {validationLabel(x)}
-              </small>
-              {x.possibleDuplicate && (
-                <small className="hint">
-                  同一邮箱已有相同类型连接，请确认没有重复授权同一工作区
-                </small>
-              )}
+                  }}
+                >
+                  <option value="any">不校验</option>
+                  <option value="personal">个人订阅</option>
+                  <option value="team">Team / Business</option>
+                </select>
+              </label>
+              <div className="account-buttons">
+                <button className="secondary" disabled={busy} onClick={() => login(x.id)}>
+                  {busy && active === x.id ? "服务启动中…" : "设备码登录"}
+                </button>
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={async () => {
+                    if (!confirm(`确定要退出“${x.displayName}”的 Codex 账号吗？`)) return;
+                    try {
+                      setErr("");
+                      await post(`accounts/${x.id}/logout`);
+                      if (deviceLogin?.accountId === x.id) setDeviceLogin(null);
+                      await load();
+                    } catch (q) {
+                      setErr((q as Error).message);
+                    }
+                  }}
+                >
+                  退出
+                </button>
+                <button
+                  className="icon danger"
+                  disabled={busy}
+                  title="删除连接"
+                  aria-label={`删除“${x.displayName}”`}
+                  onClick={async () => {
+                    if (!confirm(`删除“${x.displayName}”及其全部凭据和历史数据？此操作无法撤销。`)) return;
+                    try {
+                      setErr("");
+                      await del(`accounts/${x.id}`);
+                      if (deviceLogin?.accountId === x.id) setDeviceLogin(null);
+                      if (active === x.id) setActive(0);
+                      if (+localStorage.accountId === x.id) localStorage.removeItem("accountId");
+                      await load();
+                    } catch (q) {
+                      setErr((q as Error).message);
+                    }
+                  }}
+                >
+                  <Trash2 />
+                </button>
+              </div>
             </div>
-            <select
-              aria-label="预期连接类型"
-              value={x.expectedKind}
-              onChange={async (e) => {
-                await put(`accounts/${x.id}`, {
-                  displayName: x.displayName,
-                  expectedKind: e.target.value,
-                });
-                load();
-              }}
-            >
-              <option value="any">不校验</option>
-              <option value="personal">个人订阅</option>
-              <option value="team">Team / Business</option>
-            </select>
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() => login(x.id)}
-            >
-              {busy && active === x.id ? "服务启动中…" : "设备码登录"}
-            </button>
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={async () => {
-                if (!confirm(`确定要退出“${x.displayName}”的 Codex 账号吗？`))
-                  return;
-                await post(`accounts/${x.id}/logout`);
-                load();
-              }}
-            >
-              退出
-            </button>
-            <button
-              className="icon danger"
-              disabled={busy}
-              title="删除连接"
-              onClick={async () => {
-                if (
-                  confirm(
-                    `删除“${x.displayName}”及其全部凭据和历史数据？此操作无法撤销。`,
-                  )
-                ) {
-                  await del(`accounts/${x.id}`);
-                  if (+localStorage.accountId === x.id)
-                    localStorage.removeItem("accountId");
-                  load();
-                }
-              }}
-            >
-              <Trash2 />
-            </button>
-          </div>
+            {deviceLogin?.accountId === x.id && (
+              <div className="codebox">
+                <span>
+                  在浏览器中访问{" "}
+                  <a href={deviceLogin.verificationUrl} target="_blank" rel="noreferrer">
+                    {deviceLogin.verificationUrl}
+                  </a>
+                  ，然后输入设备码
+                </span>
+                <strong>{deviceLogin.userCode}</strong>
+              </div>
+            )}
+          </section>
         ))}
       </div>
-      {result && (
-        <div className="codebox">
-          <span>
-            为“{xs.find((x) => x.id === active)?.displayName}”访问{" "}
-            <a href={result.verificationUrl} target="_blank" rel="noreferrer">
-              {result.verificationUrl}
-            </a>
-          </span>
-          <strong>{result.userCode}</strong>
-        </div>
-      )}
       {err && <p className="error">{err}</p>}
     </div>
   );

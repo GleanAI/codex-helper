@@ -443,17 +443,9 @@ header p {
 .checks input {
   width: auto;
 }
-.actions,
-.settings-title {
+.actions {
   display: flex;
   gap: 10px;
-}
-.settings-title {
-  justify-content: space-between;
-  align-items: start;
-}
-.settings-title p {
-  margin-bottom: 0;
 }
 .danger {
   background: transparent;
@@ -464,43 +456,126 @@ header p {
   padding: 10px;
 }
 .codebox {
-  padding: 16px;
+  grid-column: 1 / -1;
+  padding: 16px 18px;
   border: 1px dashed var(--accent);
   border-radius: 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 18px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  overflow-wrap: anywhere;
 }
 .codebox strong {
   font-family: monospace;
-  font-size: 20px;
+  font-size: 24px;
+  letter-spacing: 0.08em;
   color: var(--accent);
+  white-space: nowrap;
+}
+.codex-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.codex-heading h2,
+.add-account-card h3 {
+  margin: 0;
+}
+.codex-heading h2 {
+  font-size: 26px;
+}
+.codex-heading p,
+.add-account-card p {
+  color: var(--muted);
+  margin: 7px 0 0;
+}
+.add-account-card {
+  padding: 22px 24px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.add-account-controls {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+.add-account-controls label {
+  min-width: 250px;
+}
+.add-account-controls button {
+  min-height: 43px;
+  white-space: nowrap;
 }
 .account-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
-.account-row {
+.account-card {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) auto auto auto auto;
-  gap: 10px;
-  align-items: center;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px 28px;
+  padding: 22px 24px;
 }
-.account-row > div {
+.account-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+.account-card-main .dot {
+  margin-top: 15px;
+}
+.account-details {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
-.account-row input {
-  padding: 7px;
+.account-details input {
+  width: 100%;
+  max-width: 360px;
+  padding: 9px 11px;
   font-weight: 700;
+  font-size: 16px;
 }
-.account-row small {
-  padding-left: 8px;
+.account-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.account-meta span + span {
+  position: relative;
+}
+.account-meta span + span::before {
+  content: "·";
+  position: absolute;
+  left: -10px;
+  color: var(--border);
+}
+.account-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 285px;
+}
+.account-buttons {
+  display: flex;
+  gap: 8px;
+}
+.account-buttons .secondary:first-child {
+  flex: 1;
+}
+.account-empty {
+  padding: 44px 24px;
 }
 a {
   color: var(--accent);
@@ -575,11 +650,30 @@ a {
   .fresh {
     display: none;
   }
-  .account-row {
-    grid-template-columns: auto 1fr;
+  .add-account-card,
+  .add-account-controls {
+    align-items: stretch;
+    flex-direction: column;
   }
-  .account-row button {
-    grid-column: auto;
+  .add-account-controls label {
+    min-width: 0;
+  }
+  .account-card {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+  .account-card-actions {
+    min-width: 0;
+  }
+  .account-buttons button {
+    flex: 1;
+  }
+  .account-buttons .icon {
+    flex: none;
+  }
+  .codebox {
+    flex-direction: column;
+    align-items: flex-start;
   }
   .limit {
     grid-template-columns: 1fr;
@@ -591,9 +685,6 @@ a {
   .bar,
   .limit footer {
     grid-column: 1;
-  }
-  .settings-title {
-    flex-direction: column;
   }
 }
 @media (prefers-reduced-motion: reduce) {
