@@ -202,7 +202,7 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
-test("shows the peak Tokens label without a pointer focus outline on the chart", async ({
+test("shows history days matching the daily buckets without a pointer focus outline on the chart", async ({
   page,
 }) => {
   await page.route("**/api/v1/**", async (route) => {
@@ -218,8 +218,11 @@ test("shows the peak Tokens label without a pointer focus outline on the chart",
             connected: true,
           },
           limits: [],
-          summary: { peakDailyTokens: 999_900 },
+          summary: { peakDailyTokens: 999_900, currentStreakDays: 4 },
           usage: [
+            { date: "2026-08-09", totalTokens: 200_000 },
+            { date: "2026-08-10", totalTokens: 0 },
+            { date: "2026-08-11", totalTokens: 300_000 },
             { date: "2026-08-12", totalTokens: 999_900 },
             { date: "2026-08-13", totalTokens: 500_000 },
           ],
@@ -234,9 +237,12 @@ test("shows the peak Tokens label without a pointer focus outline on the chart",
   await expect(page.locator(".stat small")).toContainText([
     "累计 Tokens",
     "单日峰值 Tokens",
-    "连续使用",
+    "历史天数",
     "最长任务时长",
   ]);
+  await expect(page.locator(".stat", { hasText: "历史天数" })).toContainText(
+    "5 天",
+  );
 
   const surface = page.locator(".chart .recharts-surface");
   await expect(surface).toHaveAttribute("tabindex", "0");
@@ -245,6 +251,31 @@ test("shows the peak Tokens label without a pointer focus outline on the chart",
   expect(
     await surface.evaluate((element) => getComputedStyle(element).outlineStyle),
   ).toBe("none");
+});
+
+test("shows zero history days when daily usage is empty", async ({ page }) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: { email: null, planType: null, connected: true },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".stat", { hasText: "历史天数" })).toContainText(
+    "0 天",
+  );
 });
 
 test("keeps daily Token axis labels visible on narrow screens", async ({

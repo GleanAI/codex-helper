@@ -6,7 +6,7 @@
 
 - 支持添加并切换多个 Codex 账号或工作区（包括同一邮箱的个人订阅与 Team 工作区）
 - 展示 Codex 账户、套餐、剩余额度和下次重置时间
-- 展示累计 Token、单日峰值 Tokens、连续使用天数及每日 Token 趋势
+- 展示累计 Token、单日峰值 Tokens、历史天数及每日 Token 趋势
 - 在本地 SQLite 中保留历史用量和限额快照
 - 在限额重置前、重置后发送 Telegram 或邮件提醒
 - 通过 Telegram 菜单查询当前用量、重置时间、历史概览和账户信息
@@ -184,10 +184,10 @@ Codex Helper 展示的是 Codex app-server 实际返回的数据。当前接口�
 
 - ChatGPT/Codex 账户和套餐类型
 - 限额窗口使用百分比、窗口长度和重置时间
-- 累计 Token、单日峰值 Tokens、连续使用天数、最长任务时长等摘要
+- 累计 Token、单日峰值 Tokens、历史天数、最长任务时长等摘要
 - 每日总 Token 桶
 
-当前接口不提供调用次数、输入 Token、输出 Token、订阅价格或账单续期日，因此总览使用“最长任务时长”作为替代摘要指标。部分摘要或每日数据也可能因账户或服务端暂未返回而显示为“暂无”。根据 OpenAI 官方文档，`account/usage/read` 需要 Codex 服务支持的身份认证；仅 API Key 或 Bedrock 登录不能读取这些 ChatGPT 用量数据。
+“历史天数”按每日 Token 趋势包含的日桶数量统计。当前接口不提供调用次数、输入 Token、输出 Token、订阅价格或账单续期日，因此总览使用“最长任务时长”作为替代摘要指标。部分摘要或每日数据也可能因账户或服务端暂未返回而显示为“暂无”。根据 OpenAI 官方文档，`account/usage/read` 需要 Codex 服务支持的身份认证；仅 API Key 或 Bedrock 登录不能读取这些 ChatGPT 用量数据。
 
 ## 常见问题
 
