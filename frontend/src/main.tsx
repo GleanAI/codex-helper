@@ -500,7 +500,7 @@ function Dashboard() {
       )}
       <div className="stats">
         <Stat label="累计 Tokens" v={num(d.summary.lifetimeTokens)} />
-        <Stat label="单日峰值" v={num(d.summary.peakDailyTokens)} />
+        <Stat label="单日峰值 Tokens" v={num(d.summary.peakDailyTokens)} />
         <Stat
           label="连续使用"
           v={

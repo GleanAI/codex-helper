@@ -202,6 +202,51 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
+test("shows the peak Tokens label without a pointer focus outline on the chart", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: { peakDailyTokens: 999_900 },
+          usage: [
+            { date: "2026-08-12", totalTokens: 999_900 },
+            { date: "2026-08-13", totalTokens: 500_000 },
+          ],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".stat small")).toContainText([
+    "累计 Tokens",
+    "单日峰值 Tokens",
+    "连续使用",
+    "最长任务时长",
+  ]);
+
+  const surface = page.locator(".chart .recharts-surface");
+  await expect(surface).toHaveAttribute("tabindex", "0");
+  await surface.click({ position: { x: 20, y: 20 } });
+  await expect(surface).toBeFocused();
+  expect(
+    await surface.evaluate((element) => getComputedStyle(element).outlineStyle),
+  ).toBe("none");
+});
+
 test("keeps daily Token axis labels visible on narrow screens", async ({
   page,
 }) => {

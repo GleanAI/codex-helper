@@ -431,6 +431,13 @@ header p {
 .chart h3 {
   margin: 0 0 5px;
 }
+.chart .recharts-surface:focus {
+  outline: none;
+}
+.chart .recharts-surface:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .banner {
   padding: 14px 18px;
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
