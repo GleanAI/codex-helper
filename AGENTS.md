@@ -26,7 +26,7 @@ Codex Helper 是单容器部署的 Codex 账户用量仪表盘，通过 Codex ap
 
 宿主机只保证 Docker 和 Docker Compose。依赖安装、Go/Node 命令、构建、测试、格式化、类型检查和安全扫描均在容器内执行；不得在宿主机安装或直接运行 `go`、`node`、`npm` 等工具，也不得修改宿主机工具链或 shell 配置。
 
-后端基线为 `golang:1.26.0-bookworm`，前端为 `node:24.19.0-bookworm-slim`，E2E 使用与 `@playwright/test` 版本匹配的官方 Playwright 镜像。完整命令见 [`docs/guides/development-and-validation.md`](docs/guides/development-and-validation.md)。纯文档改动无需运行应用构建。
+后端基线为 `golang:1.26.6-bookworm`，前端为 `node:24.19.0-bookworm-slim`，E2E 使用与 `@playwright/test` 版本匹配的官方 Playwright 镜像。完整命令见 [`docs/guides/development-and-validation.md`](docs/guides/development-and-validation.md)。纯文档改动无需运行应用构建。
 
 ## 验证与审查
 

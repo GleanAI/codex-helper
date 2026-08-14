@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only: this workflow does not publish artifacts, comments, or tags.
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (format, build, vet, test)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep Go execution inside the same image used by the documented
+      # development workflow. Tests create isolated temporary SQLite databases.
+      - name: Check backend
+        run: |
+          docker run --rm \
+            -v "$PWD/backend:/app:ro" \
+            -v codex-helper-go-mod:/go/pkg/mod \
+            -v codex-helper-go-cache:/root/.cache/go-build \
+            -w /app golang:1.26.6-bookworm \
+            sh -c 'test -z "$(gofmt -l .)" && go build ./... && go vet ./... && go test -race -count=1 ./...'
+
+  frontend:
+    name: Frontend (format, lint, build, test)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check frontend
+        run: |
+          docker run --rm \
+            -v "$PWD/frontend:/src:ro" \
+            node:24.19.0-bookworm-slim \
+            sh -c 'cp -a /src /tmp/frontend && cd /tmp/frontend && npm ci --no-audit --no-fund && npm run check'
+
+      # The image version must match @playwright/test in package.json.
+      - name: Browser tests
+        run: |
+          docker run --rm --ipc=host \
+            -v "$PWD/frontend:/src:ro" \
+            mcr.microsoft.com/playwright:v1.62.1-noble \
+            sh -c 'cp -a /src /tmp/frontend && cd /tmp/frontend && npm ci --no-audit --no-fund && npm run test:e2e'
+
+  security:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+
+    # Vulnerability databases change independently of this repository. Keep
+    # this as a separate check so branch protection can apply its own policy.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: govulncheck
+        run: |
+          docker run --rm \
+            -v "$PWD/backend:/app:ro" \
+            -v codex-helper-go-mod:/go/pkg/mod \
+            -v codex-helper-go-cache:/root/.cache/go-build \
+            -w /app golang:1.26.6-bookworm \
+            sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...'
+
+      # Runtime dependencies only; high and critical advisories fail the job.
+      - name: npm audit
+        run: |
+          docker run --rm \
+            -v "$PWD/frontend:/src:ro" \
+            node:24.19.0-bookworm-slim \
+            sh -c 'cp -a /src /tmp/frontend && cd /tmp/frontend && npm ci --no-audit --no-fund && npm audit --omit=dev --audit-level=high'

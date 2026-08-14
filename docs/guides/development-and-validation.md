@@ -4,6 +4,10 @@
 
 宿主机只保证 Docker 和 Docker Compose。所有 Go、Node、npm、格式化、构建、测试和安全扫描都在容器内执行。以下命令从仓库根目录运行；挂载源码时使用只读模式，只有构建输出确实需要写回工作区时才放宽。
 
+## 自动 CI
+
+`.github/workflows/ci.yml` 在推送到 `main` 或针对 `main` 的 Pull Request 上运行，并将门禁拆分为三个并行 job：后端格式、构建、vet 与 race test；前端格式、lint、构建、Vitest 与 Playwright；以及独立的 Go、npm 依赖漏洞扫描。所有工具仍通过下述固定版本容器执行。安全扫描是否作为合并必需检查由仓库分支保护策略决定。
+
 ## 后端
 
 完整格式、构建、vet 和测试：
@@ -13,7 +17,7 @@ docker run --rm \
   -v "$PWD/backend:/app:ro" \
   -v codex-helper-go-mod:/go/pkg/mod \
   -v codex-helper-go-cache:/root/.cache/go-build \
-  -w /app golang:1.26.0-bookworm \
+  -w /app golang:1.26.6-bookworm \
   sh -c 'test -z "$(gofmt -l .)" && go build ./... && go vet ./... && go test -count=1 ./...'
 ```
 
