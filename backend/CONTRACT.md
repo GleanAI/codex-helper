@@ -57,7 +57,7 @@
 | --- | --- |
 | `GET /api/v1/accounts` | 返回 `200 Account[]`，按 ID 升序。 |
 | `POST /api/v1/accounts` | body `{displayName,expectedKind}`；空名称默认为 `新账号`，空类型默认为 `any`；成功返回 `201 Account`。 |
-| `PUT /api/v1/accounts/{id}` | body `{displayName,expectedKind?}`；名称不能为空，省略类型时保留旧值；成功返回 `200 {ok:true}`。 |
+| `PUT /api/v1/accounts/{id}` | body `{displayName,expectedKind?}`；名称不能为空，省略类型时保留旧值；成功时同时更新内存 Dashboard 中的显示名，并返回 `200 {ok:true}`。 |
 | `DELETE /api/v1/accounts/{id}` | 停止该账号进程，删除账号及级联历史，再删除对应凭据目录；成功返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/login/device` | 启动并初始化 app-server，调用 `account/login/start` 的 `chatgptDeviceCode` 流程；返回含 `verificationUrl`、`userCode` 和 `loginId` 的结果。 |
 | `POST /api/v1/accounts/{id}/logout` | 调用 `account/logout` 并将连接状态置为 false；返回 `200 {ok:true}`。 |

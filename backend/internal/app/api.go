@@ -207,6 +207,9 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		}
 		e = a.store.UpdateAccountSettings(id, strings.TrimSpace(in.DisplayName), in.ExpectedKind)
 		if e == nil {
+			rt.syncing.Lock()
+			rt.dash.DisplayName = strings.TrimSpace(in.DisplayName)
+			rt.syncing.Unlock()
 			jsonOut(w, 200, map[string]bool{"ok": true})
 		}
 	case action == "" && r.Method == "DELETE":

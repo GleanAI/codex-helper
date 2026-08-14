@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,79 @@ func TestDashboardSerializesNilListsAsEmptyArrays(t *testing.T) {
 	}
 	if body.Limits == nil || body.Usage == nil {
 		t.Fatalf("nil lists in response: %s", recorder.Body.String())
+	}
+}
+
+func TestAccountRenameUpdatesDashboardImmediately(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.runtimes[1] = &accountRuntime{dash: Dashboard{
+		AccountID:   1,
+		DisplayName: "旧名称",
+		Limits:      []LimitBucket{{LimitID: "primary"}},
+		Usage:       []UsagePoint{{Date: "2026-08-14", TotalTokens: 42}},
+	}}
+	_, err := a.store.DB.Exec("INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)", security.HashToken("test-session"), time.Now().Add(time.Hour).Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rename := httptest.NewRequest(http.MethodPut, "/api/v1/accounts/1", bytes.NewBufferString(`{"displayName":"  新名称  "}`))
+	rename.AddCookie(&http.Cookie{Name: "session", Value: "test-session"})
+	rename.Header.Set("X-Requested-With", "codex-helper")
+	renameRecorder := httptest.NewRecorder()
+	a.api(renameRecorder, rename)
+	if renameRecorder.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, body = %s", renameRecorder.Code, renameRecorder.Body.String())
+	}
+
+	dashboard := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?accountId=1", nil)
+	dashboard.AddCookie(&http.Cookie{Name: "session", Value: "test-session"})
+	dashboardRecorder := httptest.NewRecorder()
+	a.api(dashboardRecorder, dashboard)
+	if dashboardRecorder.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, body = %s", dashboardRecorder.Code, dashboardRecorder.Body.String())
+	}
+	var body Dashboard
+	if err = json.Unmarshal(dashboardRecorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.DisplayName != "新名称" {
+		t.Fatalf("displayName = %q; want %q", body.DisplayName, "新名称")
+	}
+	if len(body.Limits) != 1 || body.Limits[0].LimitID != "primary" || len(body.Usage) != 1 || body.Usage[0].TotalTokens != 42 {
+		t.Fatalf("dashboard data changed: %#v", body)
+	}
+}
+
+func TestInvalidAccountRenameKeepsDashboardName(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.runtimes[1] = &accountRuntime{dash: Dashboard{AccountID: 1, DisplayName: "旧名称"}}
+	_, err := a.store.DB.Exec("INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)", security.HashToken("test-session"), time.Now().Add(time.Hour).Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rename := httptest.NewRequest(http.MethodPut, "/api/v1/accounts/1", bytes.NewBufferString(`{"displayName":"   "}`))
+	rename.AddCookie(&http.Cookie{Name: "session", Value: "test-session"})
+	rename.Header.Set("X-Requested-With", "codex-helper")
+	recorder := httptest.NewRecorder()
+	a.api(recorder, rename)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	a.runtimes[1].syncing.Lock()
+	name := a.runtimes[1].dash.DisplayName
+	a.runtimes[1].syncing.Unlock()
+	if name != "旧名称" {
+		t.Fatalf("displayName = %q; want %q", name, "旧名称")
+	}
+	accounts, err := a.store.Accounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts[0].DisplayName != "默认账号" {
+		t.Fatalf("stored displayName = %q; want %q", accounts[0].DisplayName, "默认账号")
 	}
 }
 
