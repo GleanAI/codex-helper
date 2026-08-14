@@ -276,6 +276,11 @@ test("shows zero history days when daily usage is empty", async ({ page }) => {
   await expect(page.locator(".stat", { hasText: "历史天数" })).toContainText(
     "0 天",
   );
+  await expect(page.locator(".balance .badge")).toHaveText("未识别套餐");
+  await expect(page.locator(".balance-updated")).toHaveText("更新于 尚未同步");
+  await expect(page.locator(".balance-empty")).toHaveText(
+    "该连接暂无限额数据，请确认登录后刷新。",
+  );
 });
 
 test("keeps daily Token axis labels visible on narrow screens", async ({
@@ -592,6 +597,84 @@ test("Codex account cards fit within the viewport", async ({ page }) => {
   expect(overflow.cardWidth).toBeLessThanOrEqual(overflow.contentWidth);
 });
 
+test("groups account metadata and multiple windows in one balance panel", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [
+            {
+              limitId: "codex",
+              limitName: "Codex",
+              windowType: "primary",
+              usedPercent: 25,
+              windowDurationMinutes: 300,
+              resetsAt: 0,
+            },
+            {
+              limitId: "codex",
+              limitName: "Codex",
+              windowType: "secondary",
+              usedPercent: 60,
+              windowDurationMinutes: 10_080,
+              resetsAt: 0,
+            },
+          ],
+          summary: {},
+          usage: [],
+          fetchedAt: 1_786_665_609,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const balance = page.locator(".balance");
+  await expect(page.getByText("Codex Account", { exact: true })).toHaveCount(0);
+  await expect(balance.locator(".badge")).toHaveText("Plus");
+  await expect(balance.locator(".badge")).toHaveCount(1);
+  await expect(balance.locator(".balance-updated")).toContainText("更新于");
+  await expect(balance.locator(".balance-updated")).not.toContainText(
+    "尚未同步",
+  );
+  await expect(balance.locator(".limit-window")).toHaveCount(2);
+  await expect(balance.getByText("Codex · 5 小时窗口")).toBeVisible();
+  await expect(balance.getByText("Codex · 7 天窗口")).toBeVisible();
+  const bars = balance.locator(".bar");
+  await expect(bars.nth(0)).toHaveAttribute(
+    "aria-label",
+    "primary：已使用 25%，剩余 75%",
+  );
+  await expect(bars.nth(1)).toHaveAttribute(
+    "aria-label",
+    "secondary：已使用 60%，剩余 40%",
+  );
+
+  const geometry = await balance.evaluate((element) => ({
+    panelWidth: element.getBoundingClientRect().width,
+    windowWidths: Array.from(element.querySelectorAll(".limit-window")).map(
+      (window) => window.getBoundingClientRect().width,
+    ),
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }));
+  expect(Math.max(...geometry.windowWidths)).toBeLessThanOrEqual(
+    geometry.panelWidth,
+  );
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+});
+
 test("Codex account emails are masked everywhere they are displayed", async ({
   page,
 }) => {
@@ -630,7 +713,6 @@ test("Codex account emails are masked everywhere they are displayed", async ({
   await expect(page.locator(".account-select")).toContainText(
     "t**t@e*****e.com",
   );
-  await expect(page.locator(".account b")).toContainText("t**t@e*****e.com");
   await expect(page.getByText("已使用 25%", { exact: true })).toHaveCount(0);
   await expect(page.getByText("剩余 75%", { exact: true })).toHaveCount(0);
   await expect(page.locator(".bar")).toHaveAttribute(
@@ -701,7 +783,7 @@ test("a slow previous account response cannot replace the selected account", asy
           displayName: accountId === 1 ? "默认账号" : "第二账号",
           account: {
             email: accountId === 1 ? "test@example.com" : "second@example.com",
-            planType: "plus",
+            planType: accountId === 1 ? "plus" : "pro",
             connected: true,
           },
           limits: [],
@@ -717,8 +799,8 @@ test("a slow previous account response cannot replace the selected account", asy
   await page.goto("/");
   const selector = page.locator(".account-select");
   await selector.selectOption("2");
-  await expect(page.locator(".account b")).toContainText("第二账号");
+  await expect(page.locator(".balance .badge")).toHaveText("Pro");
   await page.waitForTimeout(350);
-  await expect(page.locator(".account b")).toContainText("第二账号");
-  await expect(page.locator(".account b")).not.toContainText("默认账号");
+  await expect(page.locator(".balance .badge")).toHaveText("Pro");
+  await expect(page.locator(".balance .badge")).not.toHaveText("Plus");
 });

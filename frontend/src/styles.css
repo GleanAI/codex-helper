@@ -313,19 +313,7 @@ header p {
   color: var(--green);
   border-color: var(--green);
 }
-.account {
-  padding: 20px 24px;
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  margin-bottom: 20px;
-}
-.account div {
-  display: flex;
-  flex-direction: column;
-}
-.account small,
-.limit small,
+.balance small,
 .stat small,
 .chart small {
   color: var(--muted);
@@ -346,26 +334,55 @@ header p {
   padding: 6px 10px;
   border-radius: 99px;
   font-size: 12px;
+  white-space: nowrap;
 }
-.fresh {
-  margin-left: auto;
+.balance {
+  overflow: hidden;
+}
+.balance-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.balance-header > small {
+  font-weight: 600;
+}
+.balance-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.balance-updated {
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
 }
-.limits {
+.balance-windows {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1px;
+  background: var(--border);
 }
-.limit {
-  padding: 20px;
+.limit-window {
+  min-width: 0;
+  padding: 22px;
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 12px;
+  gap: 16px;
   align-items: start;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
 }
-.limit > small {
+.limit-window > small {
   grid-column: 1/-1;
+  overflow-wrap: anywhere;
+}
+.balance-empty {
+  padding: 32px 22px;
+  color: var(--muted);
+  text-align: center;
 }
 .remaining strong {
   display: block;
@@ -768,21 +785,16 @@ a {
     min-width: 0;
     width: 100%;
   }
-  .account {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    padding: 18px;
+  .balance-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 16px 18px;
   }
-  .account div,
-  .account b {
-    min-width: 0;
+  .balance-meta {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
-  .fresh {
-    display: block;
-    grid-column: 2 / -1;
-    margin-left: 0;
-  }
-  .limits {
+  .balance-windows {
     grid-template-columns: minmax(0, 1fr);
   }
   .stats {
@@ -877,16 +889,6 @@ a {
     min-height: 22px;
     min-width: 22px;
   }
-  .limit {
-    grid-template-columns: 1fr;
-  }
-  .reset {
-    text-align: left;
-  }
-  .limit > small,
-  .bar {
-    grid-column: 1;
-  }
 }
 @media (max-width: 359px) {
   .brand-name {
@@ -900,12 +902,22 @@ a {
   .stats {
     grid-template-columns: 1fr;
   }
-  .account {
-    grid-template-columns: auto minmax(0, 1fr);
+  .balance-meta {
+    justify-content: flex-start;
   }
-  .account .badge {
-    grid-column: 2;
-    justify-self: start;
+  .balance-updated {
+    flex-basis: 100%;
+  }
+  .limit-window {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+  .reset {
+    text-align: left;
+  }
+  .limit-window > small,
+  .bar {
+    grid-column: 1;
   }
   .account-buttons {
     flex-wrap: wrap;

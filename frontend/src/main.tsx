@@ -473,33 +473,11 @@ function Dashboard() {
         </div>
       </Header>
       {e && <div className="banner">{e}</div>}
-      <div className="account panel">
-        <span className={"dot " + (d.account.connected ? "ok" : "")} />
-        <div>
-          <small>Codex Account</small>
-          <b>
-            {d.displayName} ·{" "}
-            {d.account.email ? maskEmail(d.account.email) : "尚未连接"}
-          </b>
-        </div>
-        <span className="badge">{planLabel(d.account.planType)}</span>
-        <span className="fresh">
-          更新于{" "}
-          {d.fetchedAt
-            ? new Date(d.fetchedAt * 1000).toLocaleString()
-            : "尚未同步"}
-        </span>
-      </div>
-      <div className="limits">
-        {d.limits.map((x, i) => (
-          <LimitCard key={i} x={x} />
-        ))}
-      </div>
-      {!d.limits.length && (
-        <div className="panel empty">
-          该连接暂无限额数据，请确认登录后刷新。
-        </div>
-      )}
+      <BalancePanel
+        limits={d.limits}
+        planType={d.account.planType}
+        fetchedAt={d.fetchedAt}
+      />
       <div className="stats">
         <Stat label="累计 Tokens" v={num(d.summary.lifetimeTokens)} />
         <Stat label="单日峰值 Tokens" v={num(d.summary.peakDailyTokens)} />
@@ -515,15 +493,52 @@ function Dashboard() {
     </>
   );
 }
-function LimitCard({ x }: { x: Limit }) {
+function BalancePanel({
+  limits,
+  planType,
+  fetchedAt,
+}: {
+  limits: Limit[];
+  planType: string | null;
+  fetchedAt: number;
+}) {
+  return (
+    <section className="panel balance">
+      <div className="balance-header">
+        <small>余额</small>
+        <div className="balance-meta">
+          <span className="badge">{planLabel(planType)}</span>
+          <span className="balance-updated">
+            更新于{" "}
+            {fetchedAt
+              ? new Date(fetchedAt * 1000).toLocaleString()
+              : "尚未同步"}
+          </span>
+        </div>
+      </div>
+      {limits.length ? (
+        <div className="balance-windows">
+          {limits.map((x) => (
+            <LimitWindow key={`${x.limitId}:${x.windowType}`} x={x} />
+          ))}
+        </div>
+      ) : (
+        <div className="balance-empty">
+          该连接暂无限额数据，请确认登录后刷新。
+        </div>
+      )}
+    </section>
+  );
+}
+function LimitWindow({ x }: { x: Limit }) {
   const used = Math.min(100, Math.max(0, x.usedPercent)),
     left = 100 - used,
     usedLabel = Math.round(used),
     leftLabel = Math.round(left),
     leftColor = `hsl(${left * 1.2} 70% 45%)`;
   return (
-    <div className="panel limit">
-      <small>余额</small>
+    <div className="limit-window">
+      <small>{limitWindowLabel(x)}</small>
       <div className="remaining">
         <strong style={{ color: leftColor }}>
           {leftLabel}
@@ -1480,6 +1495,18 @@ const duration = (v?: number | null) =>
       : v < 3600
         ? `${Math.floor(v / 60)} 分 ${v % 60} 秒`
         : `${(v / 3600).toFixed(1)} 小时`;
+const limitWindowLabel = (limit: Limit) => {
+  const minutes = limit.windowDurationMinutes,
+    window =
+      minutes > 0 && minutes % 1440 === 0
+        ? `${minutes / 1440} 天窗口`
+        : minutes > 0 && minutes % 60 === 0
+          ? `${minutes / 60} 小时窗口`
+          : minutes > 0
+            ? `${minutes} 分钟窗口`
+            : limit.windowType;
+  return limit.limitName ? `${limit.limitName} · ${window}` : window;
+};
 const maskEmailPart = (part: string) => {
   if (part.length <= 1) return "*";
   if (part.length === 2) return part[0] + "*";
