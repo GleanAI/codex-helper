@@ -20,6 +20,9 @@ export interface Status {
   appServer: boolean;
   version: string;
 }
+export interface AuthProfile {
+  username: string;
+}
 export interface Account {
   id: number;
   displayName: string;
@@ -219,6 +222,10 @@ export const decodeGeneral: Decoder<GeneralSettings> = (value) => {
     notifyBefore: boolean(x.notifyBefore, "notifyBefore"),
     notifyAfter: boolean(x.notifyAfter, "notifyAfter"),
   };
+};
+export const decodeAuthProfile: Decoder<AuthProfile> = (value) => {
+  const x = record(value);
+  return { username: string(x.username, "username") };
 };
 export const decodeTelegram: Decoder<TelegramSettingsResponse> = (value) => {
   const x = record(value);

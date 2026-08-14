@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError, toErrorMessage } from "./api";
 import {
   decodeAction,
+  decodeAuthProfile,
   decodeDashboard,
   decodeDeviceLogin,
   decodeGeneral,
@@ -65,6 +66,15 @@ describe("API decoders", () => {
     ).toBe("菜单同步失败");
     expect(decodeAction({ ok: true, warning: "键盘清理失败" }).warning).toBe(
       "键盘清理失败",
+    );
+  });
+
+  it("解码管理员资料", () => {
+    expect(decodeAuthProfile({ username: "admin" })).toEqual({
+      username: "admin",
+    });
+    expect(() => decodeAuthProfile({ username: null })).toThrow(
+      "username格式无效",
     );
   });
 });

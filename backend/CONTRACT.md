@@ -47,9 +47,10 @@
 | `POST /api/v1/setup` | 匿名、仅未初始化 | body `{username,password,timezone}`；用户名至少 3 位、密码至少 10 位，否则 400；时区有效时写入，否则使用默认 UTC。事务创建唯一管理员和通用设置，设置 session，返回 `201 {ok:true}`；已初始化返回 409。 |
 | `POST /api/v1/auth/login` | 匿名 | body `{username,password}`；未初始化返回 409，错误凭据返回 401，成功设置 session 并返回 `200 {ok:true}`，限流返回 429。 |
 | `任意方法 /api/v1/auth/me` | session；非 `GET`/`HEAD` 还需来源头 | `200 {username}`。前端使用 `GET`。 |
+| `PUT /api/v1/auth/credentials` | session + 来源头 | body `{username,currentPassword,newPassword}`；用户名至少 3 位，非空新密码至少 10 位，空新密码表示保留原密码。当前密码错误返回 403。实际修改时更新 argon2id 摘要并撤销当前 session 之外的所有 session；无变化时不撤销 session。成功返回 `200 {username}`。 |
 | `POST /api/v1/auth/logout` | session + 来源头 | 删除当前 session、清除 cookie，返回 `200 {ok:true}`。 |
 
-兼容文案包括：`系统已初始化`、`用户名至少3位，密码至少10位`、`请先初始化`、`用户名或密码错误`、`尝试次数过多，请稍后再试`、`未登录`、`请求来源校验失败`。
+兼容文案包括：`系统已初始化`、`用户名至少3位，密码至少10位`、`用户名至少3位，新密码至少10位`、`请先初始化`、`用户名或密码错误`、`当前密码错误`、`尝试次数过多，请稍后再试`、`未登录`、`请求来源校验失败`。
 
 ## 4. Codex 账号与用量
 

@@ -4,11 +4,11 @@
 
 新数据库始终创建账号表中的默认 Codex 账号，但只有 `settings.initialized` 存在才视为完成安装。`POST /api/v1/setup` 在事务中创建唯一 `admin(id=1)`、通用设置和安装标记；用户名至少 3 位、密码至少 10 位。首次初始化没有额外安装令牌，因此初始化完成前不得把实例直接暴露到不可信网络。
 
-管理员密码使用 argon2id（3 次、64 MiB、2 lanes、32 字节结果和随机 salt）保存。当前没有改密或找回接口；不要通过新增旁路直接写入明文或弱摘要。
+管理员密码使用 argon2id（3 次、64 MiB、2 lanes、32 字节结果和随机 salt）保存。已登录管理员可通过 `PUT /api/v1/auth/credentials` 修改用户名或密码；接口必须验证当前密码，新密码留空时保留原摘要。实际修改与撤销其他 session 在同一事务中完成，当前请求的 session 保持有效。当前没有密码找回接口；不要通过新增旁路直接写入明文或弱摘要。
 
 ## Session 与请求来源
 
-登录成功生成 32 字节随机 token，客户端得到七天 `HttpOnly`、`SameSite=Strict` cookie，SQLite 只保存 SHA-256 摘要。每次受保护请求回查未过期 session。登出删除当前摘要并清 cookie。
+登录成功生成 32 字节随机 token，客户端得到七天 `HttpOnly`、`SameSite=Strict` cookie，SQLite 只保存 SHA-256 摘要。每次受保护请求回查未过期 session。登出删除当前摘要并清 cookie；修改管理员凭据会保留当前摘要并删除其他摘要。
 
 所有非 `GET`/`HEAD` 受保护请求还必须携带 `X-Requested-With: codex-helper`。这是当前同源部署下的额外 CSRF 门禁，不替代 session 校验，也不意味着可以放宽 CSP 或 cookie 策略。`Secure` 当前为 false，以支持 README 中直接 HTTP 部署；公网必须由 HTTPS 反向代理保护，调整此兼容行为时同步评估代理终止 TLS 的方式。
 

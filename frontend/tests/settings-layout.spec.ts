@@ -410,7 +410,7 @@ test("switching every settings panel keeps the layout stable", async ({
 }) => {
   await openSettings(page);
   const initial = await layout(page);
-  for (const name of ["Codex", "Telegram", "SMTP 邮件", "通用"]) {
+  for (const name of ["安全", "Codex", "Telegram", "SMTP 邮件", "通用"]) {
     await page.getByRole("tab", { name }).click();
     await expect.poll(() => layout(page)).toEqual(initial);
   }
@@ -440,8 +440,8 @@ test("arrow, Home, and End keys move focus and activate tabs", async ({
   await general.focus();
 
   await page.keyboard.press("ArrowRight");
-  await expect(page.getByRole("tab", { name: "Codex" })).toBeFocused();
-  await expect(page.getByRole("tab", { name: "Codex" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "安全" })).toBeFocused();
+  await expect(page.getByRole("tab", { name: "安全" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
@@ -456,6 +456,52 @@ test("arrow, Home, and End keys move focus and activate tabs", async ({
   await page.keyboard.press("Home");
   await expect(general).toBeFocused();
   await expect(general).toHaveAttribute("aria-selected", "true");
+});
+
+test("updates administrator credentials and clears password fields", async ({
+  page,
+}) => {
+  let savedBody: Record<string, unknown> | undefined;
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const key = new URL(request.url()).pathname.replace("/api/v1/", "");
+    if (key === "auth/credentials" && request.method() === "PUT") {
+      savedBody = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({ json: { username: savedBody.username } });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "安全" }).click();
+  const panel = page.locator("#settings-panel-security");
+  await expect(panel.getByRole("heading", { name: "登录安全" })).toBeVisible();
+  await panel.getByLabel("用户名").fill("renamed-admin");
+  await panel.getByLabel("当前密码").fill("current-password");
+  await panel
+    .getByLabel("新密码", { exact: true })
+    .fill("replacement-password");
+  await panel.getByLabel("确认新密码").fill("different-password");
+  await panel.getByRole("button", { name: "更新登录凭据" }).click();
+  await expect(panel.getByText("两次输入的新密码不一致")).toBeVisible();
+  expect(savedBody).toBeUndefined();
+
+  await panel.getByLabel("确认新密码").fill("replacement-password");
+  await panel.getByRole("button", { name: "更新登录凭据" }).click();
+  await expect.poll(() => savedBody?.username).toBe("renamed-admin");
+  expect(savedBody).toEqual({
+    username: "renamed-admin",
+    currentPassword: "current-password",
+    newPassword: "replacement-password",
+  });
+  await expect(
+    panel.getByText("登录凭据已更新，其他设备需要重新登录"),
+  ).toBeVisible();
+  await expect(panel.getByLabel("当前密码")).toHaveValue("");
+  await expect(panel.getByLabel("新密码", { exact: true })).toHaveValue("");
+  await expect(panel.getByLabel("确认新密码")).toHaveValue("");
+  await expect(
+    panel.getByRole("button", { name: "更新登录凭据" }),
+  ).toBeDisabled();
 });
 
 test("programmatic tab changes do not clamp an existing scroll position", async ({

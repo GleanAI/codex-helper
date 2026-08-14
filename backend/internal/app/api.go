@@ -51,6 +51,8 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		var username string
 		_ = a.store.DB.QueryRow("SELECT username FROM admin WHERE id=1").Scan(&username)
 		jsonOut(w, 200, map[string]string{"username": username})
+	case p == "auth/credentials" && r.Method == http.MethodPut:
+		a.updateCredentials(w, r)
 	case p == "auth/logout" && r.Method == "POST":
 		a.logout(w, r)
 	case p == "accounts" && r.Method == "GET":
@@ -323,6 +325,82 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	a.newSession(w, user)
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
+
+func (a *App) updateCredentials(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Username        string `json:"username"`
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if decode(r, &in) != nil || len(in.Username) < 3 || (in.NewPassword != "" && len(in.NewPassword) < 10) {
+		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "用户名至少3位，新密码至少10位"})
+		return
+	}
+
+	var username, passwordHash string
+	if err := a.store.DB.QueryRow("SELECT username,password_hash FROM admin WHERE id=1").Scan(&username, &passwordHash); err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "更新登录凭据失败"})
+		return
+	}
+	if !security.VerifyPassword(passwordHash, in.CurrentPassword) {
+		jsonOut(w, http.StatusForbidden, map[string]string{"error": "当前密码错误"})
+		return
+	}
+	if username == in.Username && in.NewPassword == "" {
+		jsonOut(w, http.StatusOK, map[string]string{"username": username})
+		return
+	}
+
+	newHash := passwordHash
+	if in.NewPassword != "" {
+		newHash = security.Password(in.NewPassword)
+	}
+	cookie, err := r.Cookie("session")
+	if err != nil {
+		jsonOut(w, http.StatusUnauthorized, map[string]string{"error": "未登录"})
+		return
+	}
+	updated, err := a.replaceCredentials(in.Username, newHash, passwordHash, cookie.Value)
+	if err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "更新登录凭据失败"})
+		return
+	}
+	if !updated {
+		jsonOut(w, http.StatusForbidden, map[string]string{"error": "当前密码错误"})
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]string{"username": in.Username})
+}
+
+func (a *App) replaceCredentials(username, newHash, expectedHash, currentToken string) (bool, error) {
+	tx, err := a.store.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
+		"UPDATE admin SET username=?,password_hash=? WHERE id=1 AND password_hash=?",
+		username, newHash, expectedHash,
+	)
+	if err != nil {
+		return false, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if updated != 1 {
+		return false, nil
+	}
+	if _, err = tx.Exec("DELETE FROM sessions WHERE token_hash<>?", security.HashToken(currentToken)); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (a *App) newSession(w http.ResponseWriter, _ string) {
 	tok := security.Random(32)
 	_, _ = a.store.DB.Exec("DELETE FROM sessions WHERE expires_at<?", time.Now().Unix())

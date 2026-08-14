@@ -18,6 +18,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Sun,
   Trash2,
   Zap,
@@ -28,6 +29,7 @@ import { ThemeProvider, useTheme } from "./theme";
 import {
   decodeAccounts,
   decodeAction,
+  decodeAuthProfile,
   decodeCode,
   decodeDashboard,
   decodeDeviceLogin,
@@ -562,7 +564,7 @@ const Stat = ({
     <b className={muted ? "muted" : ""}>{v}</b>
   </div>
 );
-type SettingsTab = "general" | "codex" | "telegram" | "smtp";
+type SettingsTab = "general" | "security" | "codex" | "telegram" | "smtp";
 
 const settingsTabs: Array<{
   id: SettingsTab;
@@ -571,6 +573,12 @@ const settingsTabs: Array<{
   content: React.ReactNode;
 }> = [
   { id: "general", label: "通用", icon: <Settings />, content: <General /> },
+  {
+    id: "security",
+    label: "安全",
+    icon: <ShieldCheck />,
+    content: <SecuritySettings />,
+  },
   { id: "codex", label: "Codex", icon: <Zap />, content: <CodexSettings /> },
   {
     id: "telegram",
@@ -656,6 +664,129 @@ const SettingsLoading = () => (
     <div className="spinner" />
   </div>
 );
+function SecuritySettings() {
+  const [username, setUsername] = useState("");
+  const [savedUsername, setSavedUsername] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [isError, setIsError] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadProfile = async () => {
+    try {
+      setLoading(true);
+      setMessage("");
+      const profile = await get("auth/me", decodeAuthProfile);
+      setUsername(profile.username);
+      setSavedUsername(profile.username);
+      setIsError(false);
+    } catch (error) {
+      setMessage(toErrorMessage(error));
+      setIsError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    void loadProfile();
+  }, []);
+
+  if (loading) return <SettingsLoading />;
+  if (!savedUsername && isError)
+    return (
+      <div className="panel wide">
+        <p className="error">{message}</p>
+        <button onClick={() => void loadProfile()}>重试</button>
+      </div>
+    );
+
+  const changed = username !== savedUsername || newPassword !== "";
+  return (
+    <form
+      className="panel form wide"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (newPassword !== confirmPassword) {
+          setMessage("两次输入的新密码不一致");
+          setIsError(true);
+          return;
+        }
+        try {
+          setSaving(true);
+          setMessage("");
+          const profile = await put("auth/credentials", decodeAuthProfile, {
+            username,
+            currentPassword,
+            newPassword,
+          });
+          setUsername(profile.username);
+          setSavedUsername(profile.username);
+          setCurrentPassword("");
+          setNewPassword("");
+          setConfirmPassword("");
+          setMessage("登录凭据已更新，其他设备需要重新登录");
+          setIsError(false);
+        } catch (error) {
+          setMessage(toErrorMessage(error));
+          setIsError(true);
+        } finally {
+          setSaving(false);
+        }
+      }}
+    >
+      <h2>登录安全</h2>
+      <p className="hint">修改用户名或密码前，需要验证当前密码。</p>
+      <label>
+        用户名
+        <input
+          value={username}
+          minLength={3}
+          required
+          autoComplete="username"
+          onChange={(event) => setUsername(event.target.value)}
+        />
+      </label>
+      <label>
+        当前密码
+        <input
+          type="password"
+          value={currentPassword}
+          required={changed}
+          autoComplete="current-password"
+          onChange={(event) => setCurrentPassword(event.target.value)}
+        />
+      </label>
+      <label>
+        新密码
+        <input
+          type="password"
+          value={newPassword}
+          minLength={10}
+          autoComplete="new-password"
+          placeholder="留空表示不修改"
+          onChange={(event) => setNewPassword(event.target.value)}
+        />
+      </label>
+      <label>
+        确认新密码
+        <input
+          type="password"
+          value={confirmPassword}
+          required={newPassword !== ""}
+          autoComplete="new-password"
+          onChange={(event) => setConfirmPassword(event.target.value)}
+        />
+      </label>
+      <button disabled={!changed || saving}>
+        {saving ? "正在保存…" : "更新登录凭据"}
+      </button>
+      {message && <p className={isError ? "error" : "hint"}>{message}</p>}
+    </form>
+  );
+}
 function General() {
   const [v, setV] = useState<GeneralSettings | null>(null),
     [msg, setMsg] = useState(""),
