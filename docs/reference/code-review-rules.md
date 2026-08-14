@@ -43,7 +43,7 @@ findings 优先，按 `P0` 至 `P3` 排序。每条必须包含严重级别和�
 
 ## 部署与验证专项
 
-- 固定 Go、Node、Codex CLI 和 Playwright 版本是否同步 Dockerfile、lockfile 与文档；架构和静态构建是否匹配运行层。
+- 固定的 Go、Node 和 Playwright 版本是否同步 Dockerfile、lockfile 与文档；Codex CLI 是否按 npm `latest` 策略解析、记录实际安装版本并保留显式版本覆盖能力；架构和静态构建是否匹配运行层。
 - 静态前端是否在 Go build 前正确复制；`.dockerignore` 是否会丢失必须资源或带入运行数据。
 - 最终镜像是否继续非 root，`/data` 权限是否兼容 UID `10001`；Compose 升级是否复用原卷。
 - 新环境变量是否同步代码、Compose、README 和部署文档；秘密是否可能进入 build arg、镜像层或日志。

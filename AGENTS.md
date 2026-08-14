@@ -12,7 +12,7 @@ Codex Helper 是单容器部署的 Codex 账户用量仪表盘，通过 Codex ap
 
 - `backend/`：Go 1.26、`net/http` 与 SQLite 后端；[`backend/CONTRACT.md`](backend/CONTRACT.md) 是 API 路径、状态码、响应结构和兼容文案的契约。
 - `frontend/`：React 19、TypeScript、Vite、Recharts 前端；生产构建嵌入 Go 二进制。
-- `Dockerfile`：依次构建前端、Go 后端和固定版本 Codex CLI，最终以 UID `10001` 非 root 用户运行。
+- `Dockerfile`：依次构建前端、Go 后端和构建时解析的最新 Codex CLI，最终以 UID `10001` 非 root 用户运行；可通过 build arg 固定 Codex 版本。
 - `docker-compose.yml`：对外映射端口并将全部运行数据保存到 `codex-helper-data` 卷的 `/data`。
 
 ## 开始工作前

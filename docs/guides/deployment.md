@@ -4,7 +4,9 @@
 
 ## 镜像结构
 
-`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.0 以 `CGO_ENABLED=0` 构建后端；Node 阶段安装固定 `@openai/codex`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。`APP_VERSION` 构建参数通过 Go linker 注入状态 API，未指定时默认为 `0.2.0`，前端在品牌区域显示该版本。
+`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.0 以 `CGO_ENABLED=0` 构建后端；Node 阶段默认解析并安装 npm registry 中 `@openai/codex` 的 `latest`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。`APP_VERSION` 构建参数通过 Go linker 注入状态 API，未指定时默认为 `0.2.0`，前端在品牌区域显示该版本。
+
+Codex 阶段将请求版本对应的 npm 元数据作为构建缓存输入，并从中读取确切版本后安装。每次构建都会检查该元数据；`latest` 指向新版本时只会使 Codex 阶段及其依赖层失效，前后端未变化的构建层仍可复用。已经生成的镜像不会自行升级。需要回滚或验证兼容性时，可通过 `--build-arg CODEX_VERSION=0.147.0` 指定确切版本；该参数同样接受 npm registry 可解析的其他版本标识。
 
 前端产物复制到 `backend/internal/web/dist` 后嵌入二进制。运行层使用 UID `10001` 的 system 用户 `helper`，默认 `DATA_DIR=/data`、`LISTEN_ADDR=:8080`，并暴露 `/data` volume 和 8080。健康检查调用二进制自身的 `healthcheck` 子命令。
 
@@ -17,6 +19,8 @@ docker login -u koalalove
 bash push-image.sh 0.3.0
 # 完整重新构建：bash push-image.sh 0.3.0 --no-cache
 ```
+
+发布镜像包含发布构建时解析到的 Codex CLI 版本。镜像 tag 后续不会因 npm `latest` 更新而改变，必须重新构建并发布才会包含新版 Codex CLI。
 
 脚本会创建并选用 `codex-helper-builder` buildx builder，并尝试通过 `tonistiigi/binfmt` 注册跨架构模拟器。发布前应先完成本地镜像验证；脚本执行成功即会推送远端标签。
 

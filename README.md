@@ -31,6 +31,15 @@ cd codex-helper
 docker compose up -d --build
 ```
 
+镜像构建默认检查 npm registry 中 `@openai/codex` 的 `latest` 版本并安装当时解析到的确切版本。已经构建或正在运行的镜像不会自行升级 Codex CLI；重新执行带 `--build` 的构建命令才会检查更新。
+
+如果最新版出现 app-server 协议兼容问题，可以固定已知可用版本重新构建：
+
+```bash
+docker compose build --build-arg CODEX_VERSION=0.147.0
+docker compose up -d
+```
+
 查看运行状态：
 
 ```bash
@@ -123,6 +132,12 @@ http://服务器地址:8180
 ```bash
 git pull --ff-only
 docker compose up -d --build
+```
+
+该构建会重新检查 npm `latest`。更新完成后可使用以下命令查看镜像内实际安装的 Codex CLI 版本：
+
+```bash
+docker compose run --rm --entrypoint codex codex-helper --version
 ```
 
 停止和重新启动：

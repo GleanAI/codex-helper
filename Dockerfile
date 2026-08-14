@@ -18,8 +18,13 @@ COPY --from=frontend /src/backend/internal/web/dist ./internal/web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X codex-helper/internal/app.Version=${APP_VERSION}" -o /out/codex-helper ./cmd/server
 
 FROM node:24.19.0-bookworm-slim AS codex
-ARG CODEX_VERSION=0.147.0
-RUN npm install -g @openai/codex@${CODEX_VERSION} && npm cache clean --force
+ARG CODEX_VERSION=latest
+ADD https://registry.npmjs.org/@openai%2Fcodex/${CODEX_VERSION} /tmp/codex-package.json
+RUN RESOLVED_CODEX_VERSION="$(node -p "require('/tmp/codex-package.json').version")" \
+ && echo "Installing @openai/codex@${RESOLVED_CODEX_VERSION}" \
+ && npm install -g "@openai/codex@${RESOLVED_CODEX_VERSION}" \
+ && rm /tmp/codex-package.json \
+ && npm cache clean --force
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/* \
