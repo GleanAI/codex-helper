@@ -37,7 +37,7 @@
  fetchedAt, stale, lastError?}
 ```
 
-时间字段为 Unix 秒。app-server 未提供的摘要字段可以是 `null`；列表应返回数组而非 `null`。
+时间字段为 Unix 秒。`limits[].windowType` 是 app-server 中 `primary` 或 `secondary` 窗口的位置标识，不代表固定周期；实际周期由 `windowDurationMinutes` 表示，上游未提供时为 `0`。app-server 未提供的摘要字段可以是 `null`；列表应返回数组而非 `null`。
 
 ## 3. 系统、初始化与会话
 

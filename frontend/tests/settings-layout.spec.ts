@@ -629,6 +629,14 @@ test("groups account metadata and multiple windows in one balance panel", async 
               windowDurationMinutes: 10_080,
               resetsAt: 0,
             },
+            {
+              limitId: "other",
+              limitName: null,
+              windowType: "secondary",
+              usedPercent: 10,
+              windowDurationMinutes: 0,
+              resetsAt: 0,
+            },
           ],
           summary: {},
           usage: [],
@@ -648,18 +656,25 @@ test("groups account metadata and multiple windows in one balance panel", async 
   await expect(balance.locator(".balance-updated")).not.toContainText(
     "尚未同步",
   );
-  await expect(balance.locator(".limit-window")).toHaveCount(2);
+  await expect(balance.locator(".limit-window")).toHaveCount(3);
   await expect(balance.getByText("Codex · 5 小时窗口")).toBeVisible();
   await expect(balance.getByText("Codex · 7 天窗口")).toBeVisible();
+  await expect(balance.getByText("限额窗口", { exact: true })).toBeVisible();
   const bars = balance.locator(".bar");
   await expect(bars.nth(0)).toHaveAttribute(
     "aria-label",
-    "primary：已使用 25%，剩余 75%",
+    "Codex · 5 小时窗口：已使用 25%，剩余 75%",
   );
   await expect(bars.nth(1)).toHaveAttribute(
     "aria-label",
-    "secondary：已使用 60%，剩余 40%",
+    "Codex · 7 天窗口：已使用 60%，剩余 40%",
   );
+  await expect(bars.nth(2)).toHaveAttribute(
+    "aria-label",
+    "限额窗口：已使用 10%，剩余 90%",
+  );
+  await expect(balance.locator('[aria-label*="primary"]')).toHaveCount(0);
+  await expect(balance.locator('[aria-label*="secondary"]')).toHaveCount(0);
 
   const geometry = await balance.evaluate((element) => ({
     panelWidth: element.getBoundingClientRect().width,
@@ -717,7 +732,7 @@ test("Codex account emails are masked everywhere they are displayed", async ({
   await expect(page.getByText("剩余 75%", { exact: true })).toHaveCount(0);
   await expect(page.locator(".bar")).toHaveAttribute(
     "aria-label",
-    "5h：已使用 25%，剩余 75%",
+    "5 小时窗口：已使用 25%，剩余 75%",
   );
   await expect(page.locator("body")).not.toContainText("test@example.com");
 

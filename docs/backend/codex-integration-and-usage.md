@@ -23,7 +23,7 @@ account/login/start {type:"chatgptDeviceCode"}
 一次同步依次读取 `account/read`、`account/rateLimits/read` 和 `account/usage/read`：
 
 - `account/read` 决定连接、邮箱、认证模式和套餐；读取失败会使整次同步失败。
-- 限额读取兼容 `rateLimitsByLimitId` 多 bucket 和旧 `rateLimits` 单 bucket，再把 primary/secondary 展平。失败时保留空限额而不令整次同步失败。
+- 限额读取兼容 `rateLimitsByLimitId` 多 bucket 和旧 `rateLimits` 单 bucket，再把 `primary`/`secondary` 位置展平。两者不对应固定周期；上游 nullable 的 `windowDurationMins` 标准化为 Dashboard 的 `windowDurationMinutes`，缺失时使用 `0`。读取失败时保留空限额而不令整次同步失败。
 - 套餐未知时，可从所有可分类且一致的限额 bucket 回填；冲突或未知时必须保持 unknown。
 - 用量读取保存 summary 和每日 Token bucket；接口失败时使用空摘要和空历史，不令整次同步失败。
 - 每次限额同步写入快照、检测用量百分比显著回落，并更新账号元数据及内存 Dashboard。

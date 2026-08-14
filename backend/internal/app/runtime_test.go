@@ -72,6 +72,53 @@ func TestDashboardSerializesNilListsAsEmptyArrays(t *testing.T) {
 	}
 }
 
+func TestFlattenLimitDecodesAppServerWindowDurations(t *testing.T) {
+	var response struct {
+		RateLimits *rawLimit `json:"rateLimits"`
+	}
+	payload := `{
+		"rateLimits": {
+			"limitId": "codex",
+			"primary": {"usedPercent": 25, "windowDurationMins": 300, "resetsAt": 1786665600},
+			"secondary": {"usedPercent": 60, "windowDurationMins": 10080, "resetsAt": 1787270400}
+		}
+	}`
+	if err := json.Unmarshal([]byte(payload), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RateLimits == nil {
+		t.Fatal("rateLimits is nil")
+	}
+	limits := flattenLimit(*response.RateLimits)
+	if len(limits) != 2 {
+		t.Fatalf("len(limits) = %d; want 2", len(limits))
+	}
+	if limits[0].WindowType != "primary" || limits[0].WindowDurationMinutes != 300 || limits[0].ResetsAt != 1786665600 {
+		t.Fatalf("primary = %#v", limits[0])
+	}
+	if limits[1].WindowType != "secondary" || limits[1].WindowDurationMinutes != 10080 || limits[1].ResetsAt != 1787270400 {
+		t.Fatalf("secondary = %#v", limits[1])
+	}
+}
+
+func TestFlattenLimitHandlesNullWindowMetadata(t *testing.T) {
+	var limit rawLimit
+	payload := `{
+		"limitId": "codex",
+		"primary": {"usedPercent": 25, "windowDurationMins": null, "resetsAt": null}
+	}`
+	if err := json.Unmarshal([]byte(payload), &limit); err != nil {
+		t.Fatal(err)
+	}
+	limits := flattenLimit(limit)
+	if len(limits) != 1 {
+		t.Fatalf("len(limits) = %d; want 1", len(limits))
+	}
+	if limits[0].WindowDurationMinutes != 0 || limits[0].ResetsAt != 0 {
+		t.Fatalf("limit = %#v; want zero optional metadata", limits[0])
+	}
+}
+
 func TestAccountRenameUpdatesDashboardImmediately(t *testing.T) {
 	a := newReminderTestApp(t)
 	a.runtimes[1] = &accountRuntime{dash: Dashboard{

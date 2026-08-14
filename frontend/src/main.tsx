@@ -535,10 +535,11 @@ function LimitWindow({ x }: { x: Limit }) {
     left = 100 - used,
     usedLabel = Math.round(used),
     leftLabel = Math.round(left),
-    leftColor = `hsl(${left * 1.2} 70% 45%)`;
+    leftColor = `hsl(${left * 1.2} 70% 45%)`,
+    windowLabel = limitWindowLabel(x);
   return (
     <div className="limit-window">
-      <small>{limitWindowLabel(x)}</small>
+      <small>{windowLabel}</small>
       <div className="remaining">
         <strong style={{ color: leftColor }}>
           {leftLabel}
@@ -557,7 +558,7 @@ function LimitWindow({ x }: { x: Limit }) {
       </div>
       <div
         className="bar"
-        aria-label={`${x.windowType}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
+        aria-label={`${windowLabel}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
       >
         <em style={{ width: left + "%", background: leftColor }} />
         <i style={{ width: used + "%" }} />
@@ -1504,7 +1505,7 @@ const limitWindowLabel = (limit: Limit) => {
           ? `${minutes / 60} 小时窗口`
           : minutes > 0
             ? `${minutes} 分钟窗口`
-            : limit.windowType;
+            : "限额窗口";
   return limit.limitName ? `${limit.limitName} · ${window}` : window;
 };
 const maskEmailPart = (part: string) => {

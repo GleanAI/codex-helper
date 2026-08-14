@@ -604,22 +604,47 @@ func (a *App) storeLimitSnapshots(d Dashboard) (bool, error) {
 }
 
 type rawLimit struct {
-	LimitID   string       `json:"limitId"`
-	LimitName *string      `json:"limitName"`
-	PlanType  *string      `json:"planType"`
-	Primary   *LimitWindow `json:"primary"`
-	Secondary *LimitWindow `json:"secondary"`
+	LimitID   string          `json:"limitId"`
+	LimitName *string         `json:"limitName"`
+	PlanType  *string         `json:"planType"`
+	Primary   *rawLimitWindow `json:"primary"`
+	Secondary *rawLimitWindow `json:"secondary"`
+}
+
+type rawLimitWindow struct {
+	UsedPercent        float64 `json:"usedPercent"`
+	WindowDurationMins *int    `json:"windowDurationMins"`
+	ResetsAt           *int64  `json:"resetsAt"`
 }
 
 func flattenLimit(x rawLimit) []LimitBucket {
 	out := []LimitBucket{}
 	if x.Primary != nil {
-		out = append(out, LimitBucket{x.LimitID, x.LimitName, "primary", x.Primary.UsedPercent, x.Primary.WindowDurationMins, x.Primary.ResetsAt, x.PlanType})
+		out = append(out, flattenLimitWindow(x, "primary", x.Primary))
 	}
 	if x.Secondary != nil {
-		out = append(out, LimitBucket{x.LimitID, x.LimitName, "secondary", x.Secondary.UsedPercent, x.Secondary.WindowDurationMins, x.Secondary.ResetsAt, x.PlanType})
+		out = append(out, flattenLimitWindow(x, "secondary", x.Secondary))
 	}
 	return out
+}
+
+func flattenLimitWindow(limit rawLimit, windowType string, window *rawLimitWindow) LimitBucket {
+	duration, resetsAt := 0, int64(0)
+	if window.WindowDurationMins != nil {
+		duration = *window.WindowDurationMins
+	}
+	if window.ResetsAt != nil {
+		resetsAt = *window.ResetsAt
+	}
+	return LimitBucket{
+		LimitID:               limit.LimitID,
+		LimitName:             limit.LimitName,
+		WindowType:            windowType,
+		UsedPercent:           window.UsedPercent,
+		WindowDurationMinutes: duration,
+		ResetsAt:              resetsAt,
+		PlanType:              limit.PlanType,
+	}
 }
 
 var _ = context.Canceled

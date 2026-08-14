@@ -39,11 +39,6 @@ type AccountView struct {
 	PlanType  *string `json:"planType"`
 	Connected bool    `json:"connected"`
 }
-type LimitWindow struct {
-	UsedPercent        float64 `json:"usedPercent"`
-	WindowDurationMins int     `json:"windowDurationMinutes"`
-	ResetsAt           int64   `json:"resetsAt"`
-}
 type LimitBucket struct {
 	LimitID               string  `json:"limitId"`
 	LimitName             *string `json:"limitName"`
