@@ -157,7 +157,7 @@ test("shows the build version on login", async ({ page }) => {
   });
   await expect(github).toHaveAttribute(
     "href",
-    "https://github.com/zhoujun0601/codex-helper",
+    "https://github.com/GleanAI/codex-helper",
   );
   await expect(github).toHaveAttribute("target", "_blank");
 });
@@ -172,7 +172,7 @@ test("shows the GitHub link after login", async ({ page }) => {
   await expect(github).toBeVisible();
   await expect(github).toHaveAttribute(
     "href",
-    "https://github.com/zhoujun0601/codex-helper",
+    "https://github.com/GleanAI/codex-helper",
   );
 });
 

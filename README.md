@@ -27,7 +27,7 @@
 ## 安装
 
 ```bash
-git clone git@github.com:zhoujun0601/codex-helper.git
+git clone https://github.com/GleanAI/codex-helper.git
 cd codex-helper
 docker compose up -d --build
 ```

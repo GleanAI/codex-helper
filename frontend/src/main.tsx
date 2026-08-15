@@ -48,7 +48,7 @@ import {
 import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
-const repositoryURL = "https://github.com/zhoujun0601/codex-helper";
+const repositoryURL = "https://github.com/GleanAI/codex-helper";
 
 function GitHubLink({ className = "" }: { className?: string }) {
   return (
