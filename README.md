@@ -26,6 +26,40 @@
 
 ## 安装
 
+### 使用 Release Compose 快速部署
+
+`docker-compose.release.yml` 会直接拉取 Docker Hub 上的发布镜像，无需在宿主机构建前后端和 Codex CLI：
+
+```bash
+git clone https://github.com/GleanAI/codex-helper.git
+cd codex-helper
+
+# 创建持久化目录，并允许容器内的非 root 用户读写
+mkdir -p data
+sudo chown -R 10001:10001 data
+
+# 拉取并启动发布镜像
+docker compose -f docker-compose.release.yml up -d
+```
+
+部署文件固定使用以下配置，不依赖 `.env`：
+
+- 镜像：`koalalove/codex-helper:latest`
+- 访问端口：`8180`
+- 宿主机数据目录：`./data`
+- 容器数据目录：`/data`
+
+查看启动状态和日志：
+
+```bash
+docker compose -f docker-compose.release.yml ps
+docker compose -f docker-compose.release.yml logs -f codex-helper
+```
+
+容器状态变为 `healthy` 后，访问 `http://服务器地址:8180` 完成初始化。升级时必须保留整个 `./data` 目录，其中包含数据库、加密密钥和 Codex 登录凭据。
+
+### 从源码本地构建
+
 ```bash
 git clone https://github.com/GleanAI/codex-helper.git
 cd codex-helper
@@ -130,7 +164,16 @@ http://服务器地址:8180
 
 ## 日常操作
 
-更新项目：
+更新 Release 部署：
+
+```bash
+docker compose -f docker-compose.release.yml pull
+docker compose -f docker-compose.release.yml up -d
+```
+
+在同一目录中执行升级，并保留整个 `./data` 目录。
+
+更新源码构建部署：
 
 ```bash
 git pull --ff-only
@@ -165,7 +208,7 @@ curl http://localhost:8180/health/ready
 
 ## 数据、备份与恢复
 
-所有持久数据位于 Docker 卷的 `/data`：
+所有持久数据位于容器的 `/data`。Release Compose 默认将其映射到宿主机 `./data`；源码构建 Compose 使用 `codex-helper-data` 命名卷：
 
 - `codex-helper.db`：管理员、设置、历史用量和通知记录
 - `secret.key`：用于解密 SMTP 密码和 Telegram Token
@@ -179,7 +222,7 @@ http://服务器地址:8180/api/v1/maintenance/backup
 
 SQLite 快照不包含 `secret.key` 和 `codex/`。完整灾难恢复必须同时备份整个 `/data` 数据卷；恢复时先停止容器，再恢复全部内容，并确保文件所有者仍可被容器中的 UID `10001` 读取。
 
-不要使用 `docker compose down -v`，该命令会删除持久数据卷。
+不要删除 Release 部署的宿主机数据目录。对源码构建部署不要使用 `docker compose down -v`，该命令会删除持久数据卷。从命名卷切换到 Release Compose 前，必须先停止容器并将整个 `/data` 复制到目标宿主机目录；Release Compose 不会自动迁移旧卷。
 
 ## 数据边界
 

@@ -1,0 +1,35 @@
+# ── Codex Helper 单容器部署（Release 版·拉取已发布镜像）──────────
+# 与 docker-compose.yml 的区别：
+#   1. 不在本地构建，直接拉取 Docker Hub 上已发布的镜像；
+#   2. 数据持久化使用宿主机目录映射，默认保存在本目录的 ./data。
+#
+# 首次启动（容器以 UID/GID 10001 运行）：
+#   mkdir -p ./data
+#   sudo chown -R 10001:10001 ./data
+#   docker compose -f docker-compose.release.yml up -d
+#
+# 访问：http://localhost:8180
+#
+# ── 升级（保留全部数据）──────────────────────────────────────
+#   在同一目录中执行：
+#     docker compose -f docker-compose.release.yml pull
+#     docker compose -f docker-compose.release.yml up -d
+#
+#   ⚠ 数据保存在 ./data；升级和完整恢复时必须保留整个目录。
+#   ⚠ 从默认 docker-compose.yml 的命名卷切换前，必须先停止容器并将整个 /data
+#      复制到此宿主机目录；Release Compose 不会自动迁移旧卷。
+#   ⚠ 不要删除数据目录；SQLite 快照不包含 secret.key 或 Codex 凭据。
+# ────────────────────────────────────────────────────────────────────
+
+name: codex-helper
+
+services:
+  codex-helper:
+    image: koalalove/codex-helper:latest
+    restart: unless-stopped
+    ports:
+      - "8180:8080"
+    volumes:
+      - "./data:/data"
+    environment:
+      LISTEN_ADDR: ":8080"

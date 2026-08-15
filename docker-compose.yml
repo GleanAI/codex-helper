@@ -1,6 +1,9 @@
 services:
   codex-helper:
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: dev
     image: codex-helper:latest
     restart: unless-stopped
     ports:

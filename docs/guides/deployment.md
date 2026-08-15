@@ -26,7 +26,17 @@ bash push-image.sh 0.3.0
 
 ## Compose 与持久化
 
-`docker-compose.yml` 本地构建 `codex-helper:latest`，将宿主机 8180 映射到容器 8080，并把命名卷 `codex-helper-data` 挂载到 `/data`。全部数据库、密钥、Codex 配置和多账号凭据都依赖这个卷。
+`docker-compose.yml` 本地构建 `codex-helper:latest`，并通过 `APP_VERSION=dev` 让界面版本徽标显示为 `vdev`；它将宿主机 8180 映射到容器 8080，并把命名卷 `codex-helper-data` 挂载到 `/data`。全部数据库、密钥、Codex 配置和多账号凭据都依赖这个卷。
+
+`docker-compose.release.yml` 不在本地构建，而是固定拉取 `koalalove/codex-helper:latest`；该镜像的界面版本由 `push-image.sh` 发布时传入的真实版本号决定，不受开发版 `APP_VERSION=dev` 影响。它将宿主机 8180 映射到容器 8080，并将完整 `/data` 通过 bind mount 保存到 `./data`；该文件不依赖 `.env`。由于应用以 UID/GID `10001` 运行，首次启动前必须创建该目录并将其所有者设为 `10001:10001`：
+
+```bash
+mkdir -p ./data
+sudo chown -R 10001:10001 ./data
+docker compose -f docker-compose.release.yml up -d
+```
+
+Release 部署升级时在同一目录中执行 `pull` 和 `up -d`，并保留整个 `./data` 目录。从现有命名卷切换前，必须先停止容器、将整个 `/data` 复制到目标目录，再确认 UID `10001` 可读写；Compose 不会自动迁移旧卷。
 
 升级应使用：
 

@@ -6,3 +6,4 @@ backend/internal/web/dist/*
 *.db-wal
 .env
 *.tsbuildinfo
+/data/
