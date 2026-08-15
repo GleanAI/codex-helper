@@ -72,6 +72,129 @@ export const get = <T>(
   decoder: Decoder<T>,
   signal?: AbortSignal,
 ) => api(path, decoder, { signal });
+
+const retryDelays = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+
+export async function getEventually<T>(
+  path: string,
+  decoder: Decoder<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  let retry = 0;
+  while (true) {
+    await waitForAvailability(signal);
+    const unavailable = new AbortController();
+    const pause = () => {
+      if (!isPageAvailable()) unavailable.abort("unavailable");
+    };
+    window.addEventListener("offline", pause);
+    document.addEventListener("visibilitychange", pause);
+    pause();
+    try {
+      const requestSignal = signal
+        ? AbortSignal.any([signal, unavailable.signal])
+        : unavailable.signal;
+      return await get(path, decoder, requestSignal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (unavailable.signal.aborted) continue;
+      if (!isRetryableReadError(error)) throw error;
+      await waitForRetry(
+        retryDelays[Math.min(retry, retryDelays.length - 1)],
+        signal,
+      );
+      retry += 1;
+    } finally {
+      window.removeEventListener("offline", pause);
+      document.removeEventListener("visibilitychange", pause);
+    }
+  }
+}
+
+function isRetryableReadError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.kind === "network" || error.kind === "timeout") return true;
+  return (
+    error.kind === "http" &&
+    (error.status === 408 ||
+      error.status === 429 ||
+      (error.status !== undefined && error.status >= 500))
+  );
+}
+
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer: number | undefined;
+    let waitingForAvailability = !isPageAvailable();
+
+    const cleanup = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener("online", availabilityChanged);
+      window.removeEventListener("offline", availabilityChanged);
+      document.removeEventListener("visibilitychange", availabilityChanged);
+      signal?.removeEventListener("abort", aborted);
+    };
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    const startTimer = () => {
+      timer = window.setTimeout(finish, delayMs);
+    };
+    const availabilityChanged = () => {
+      if (!isPageAvailable()) {
+        waitingForAvailability = true;
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          timer = undefined;
+        }
+        return;
+      }
+      if (waitingForAvailability) finish();
+      else if (timer === undefined) startTimer();
+    };
+    const aborted = () => {
+      cleanup();
+      reject(signal?.reason ?? new DOMException("请求已取消", "AbortError"));
+    };
+
+    if (signal?.aborted) return aborted();
+    window.addEventListener("online", availabilityChanged);
+    window.addEventListener("offline", availabilityChanged);
+    document.addEventListener("visibilitychange", availabilityChanged);
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (!waitingForAvailability) startTimer();
+  });
+}
+
+function waitForAvailability(signal?: AbortSignal): Promise<void> {
+  if (isPageAvailable()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      window.removeEventListener("online", availabilityChanged);
+      document.removeEventListener("visibilitychange", availabilityChanged);
+      signal?.removeEventListener("abort", aborted);
+    };
+    const availabilityChanged = () => {
+      if (!isPageAvailable()) return;
+      cleanup();
+      resolve();
+    };
+    const aborted = () => {
+      cleanup();
+      reject(signal?.reason ?? new DOMException("请求已取消", "AbortError"));
+    };
+
+    if (signal?.aborted) return aborted();
+    window.addEventListener("online", availabilityChanged);
+    document.addEventListener("visibilitychange", availabilityChanged);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+function isPageAvailable(): boolean {
+  return document.visibilityState !== "hidden" && navigator.onLine;
+}
 export const post = <T>(
   path: string,
   decoder: Decoder<T>,

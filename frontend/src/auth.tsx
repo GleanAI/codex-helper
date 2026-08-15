@@ -5,7 +5,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ApiError, get, onUnauthorized, post, toErrorMessage } from "./api";
+import {
+  ApiError,
+  getEventually,
+  onUnauthorized,
+  post,
+  toErrorMessage,
+} from "./api";
 import { decodeOK, decodeStatus, type AsyncState, type Status } from "./types";
 
 type AuthContextValue = {
@@ -29,14 +35,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const load = async () => {
     setState({ status: "loading" });
     try {
-      const status = await get("system/status", decodeStatus);
+      const status = await getEventually("system/status", decodeStatus);
       if (!status.initialized)
         return setState({
           status: "success",
           data: { status, authenticated: false },
         });
       try {
-        await get("auth/me", () => undefined);
+        await getEventually("auth/me", () => undefined);
         setState({ status: "success", data: { status, authenticated: true } });
       } catch (error) {
         if (error instanceof ApiError && error.status === 401)

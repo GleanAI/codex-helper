@@ -699,6 +699,39 @@ test("groups account metadata and multiple windows in one balance panel", async 
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
 });
 
+test("silently retries a transient dashboard read failure", async ({
+  page,
+}) => {
+  let dashboardRequests = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard") {
+      dashboardRequests += 1;
+      if (dashboardRequests === 1) return route.abort("internetdisconnected");
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: { email: null, planType: "plus", connected: true },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => dashboardRequests).toBe(1);
+  await expect(page.locator(".banner")).toHaveCount(0);
+  await expect(page.locator(".account-select")).toBeVisible();
+  expect(dashboardRequests).toBe(2);
+  await expect(page.locator(".banner")).toHaveCount(0);
+});
+
 test("Codex account emails are masked everywhere they are displayed", async ({
   page,
 }) => {

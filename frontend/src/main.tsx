@@ -23,7 +23,7 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { api, del, get, post, put, toErrorMessage } from "./api";
+import { api, del, get, getEventually, post, put, toErrorMessage } from "./api";
 import { AuthProvider, useAuth } from "./auth";
 import { ThemeProvider, useTheme } from "./theme";
 import {
@@ -336,6 +336,10 @@ function Shell({ version }: { version: string }) {
     </div>
   );
 }
+function pageAvailable() {
+  return document.visibilityState !== "hidden" && navigator.onLine;
+}
+
 function Dashboard() {
   const [accounts, setAccounts] = useState<Account[] | null>(null),
     [id, setId] = useState(+(localStorage.accountId || 0)),
@@ -344,22 +348,30 @@ function Dashboard() {
     [refresh, setRefresh] = useState<"idle" | "loading" | "done">("idle");
   const requestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  const loadAccounts = async () => {
+  const loadAccounts = async (signal?: AbortSignal, eventual = false) => {
     try {
-      const xs = await get("accounts", decodeAccounts);
+      const xs = await (eventual ? getEventually : get)(
+        "accounts",
+        decodeAccounts,
+        signal,
+      );
       setAccounts(xs);
       setE("");
       const next = xs.some((x) => x.id === id) ? id : xs[0]?.id || 0;
       if (next !== id) setId(next);
     } catch (error) {
-      setE(toErrorMessage(error));
+      if (!signal?.aborted) setE(toErrorMessage(error));
     }
   };
-  const load = async (accountId = id, signal?: AbortSignal) => {
+  const load = async (
+    accountId = id,
+    signal?: AbortSignal,
+    eventual = false,
+  ) => {
     if (!accountId) return;
     const request = ++requestRef.current;
     try {
-      const dashboard = await get(
+      const dashboard = await (eventual ? getEventually : get)(
         "dashboard?accountId=" + accountId,
         decodeDashboard,
         signal,
@@ -374,24 +386,56 @@ function Dashboard() {
     }
   };
   useEffect(() => {
-    void loadAccounts();
+    const controller = new AbortController();
+    void loadAccounts(controller.signal, true);
+    return () => controller.abort();
   }, []);
   useEffect(() => {
     if (!id) return;
     localStorage.setItem("accountId", String(id));
     setD(null);
     abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+    let stopped = false;
+    let running = false;
+    let refreshPending = false;
+    let controller: AbortController | null = null;
     let timer = 0;
     const poll = async () => {
-      await load(id, controller.signal);
-      if (!controller.signal.aborted) timer = window.setTimeout(poll, 30_000);
+      if (stopped || running || !pageAvailable()) return;
+      running = true;
+      refreshPending = false;
+      controller = new AbortController();
+      abortRef.current = controller;
+      await load(id, controller.signal, true);
+      running = false;
+      controller = null;
+      if (stopped || !pageAvailable()) return;
+      if (refreshPending) void poll();
+      else timer = window.setTimeout(poll, 30_000);
     };
+    const availabilityChanged = () => {
+      window.clearTimeout(timer);
+      if (!pageAvailable()) {
+        refreshPending = false;
+        controller?.abort();
+        return;
+      }
+      if (running) {
+        refreshPending = true;
+        controller?.abort();
+      } else void poll();
+    };
+    window.addEventListener("online", availabilityChanged);
+    window.addEventListener("offline", availabilityChanged);
+    document.addEventListener("visibilitychange", availabilityChanged);
     void poll();
     return () => {
-      controller.abort();
+      stopped = true;
+      controller?.abort();
       window.clearTimeout(timer);
+      window.removeEventListener("online", availabilityChanged);
+      window.removeEventListener("offline", availabilityChanged);
+      document.removeEventListener("visibilitychange", availabilityChanged);
     };
   }, [id]);
   const sync = async () => {
@@ -691,23 +735,31 @@ function SecuritySettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const loadProfile = async () => {
+  const loadProfile = async (signal?: AbortSignal, eventual = false) => {
     try {
       setLoading(true);
       setMessage("");
-      const profile = await get("auth/me", decodeAuthProfile);
+      const profile = await (eventual ? getEventually : get)(
+        "auth/me",
+        decodeAuthProfile,
+        signal,
+      );
       setUsername(profile.username);
       setSavedUsername(profile.username);
       setIsError(false);
     } catch (error) {
-      setMessage(toErrorMessage(error));
-      setIsError(true);
+      if (!signal?.aborted) {
+        setMessage(toErrorMessage(error));
+        setIsError(true);
+      }
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   };
   useEffect(() => {
-    void loadProfile();
+    const controller = new AbortController();
+    void loadProfile(controller.signal, true);
+    return () => controller.abort();
   }, []);
 
   if (loading) return <SettingsLoading />;
@@ -808,18 +860,24 @@ function General() {
     [msg, setMsg] = useState(""),
     [loadError, setLoadError] = useState("");
   const { applyTheme } = useTheme();
-  const loadGeneral = async () => {
+  const loadGeneral = async (signal?: AbortSignal, eventual = false) => {
     try {
       setLoadError("");
-      const value = await get("settings/general", decodeGeneral);
+      const value = await (eventual ? getEventually : get)(
+        "settings/general",
+        decodeGeneral,
+        signal,
+      );
       setV(value);
       applyTheme(value.theme);
     } catch (error) {
-      setLoadError(toErrorMessage(error));
+      if (!signal?.aborted) setLoadError(toErrorMessage(error));
     }
   };
   useEffect(() => {
-    void loadGeneral();
+    const controller = new AbortController();
+    void loadGeneral(controller.signal, true);
+    return () => controller.abort();
   }, []);
   if (!v)
     return loadError ? (
@@ -930,13 +988,21 @@ function CodexSettings() {
     [newKind, setNewKind] = useState<"personal" | "team">("team"),
     [busy, setBusy] = useState(false),
     [err, setErr] = useState("");
-  const load = async (signal?: AbortSignal) => {
-    const accounts = await get("accounts", decodeAccounts, signal);
+  const load = async (signal?: AbortSignal, eventual = false) => {
+    const accounts = await (eventual ? getEventually : get)(
+      "accounts",
+      decodeAccounts,
+      signal,
+    );
     setXs(accounts);
     return accounts;
   };
   useEffect(() => {
-    void load().catch((error) => setErr(toErrorMessage(error)));
+    const controller = new AbortController();
+    void load(controller.signal, true).catch((error) => {
+      if (!controller.signal.aborted) setErr(toErrorMessage(error));
+    });
+    return () => controller.abort();
   }, []);
   useEffect(() => {
     if (!deviceLogin) return;
@@ -945,7 +1011,7 @@ function CodexSettings() {
     let timer = 0;
     const poll = async () => {
       try {
-        const accounts = await load(controller.signal);
+        const accounts = await load(controller.signal, true);
         const account = accounts.find((x) => x.id === deviceLogin.accountId);
         if (!account) {
           setDeviceLogin(null);
@@ -1194,17 +1260,23 @@ function Telegram() {
     [msg, setMsg] = useState(""),
     [code, setCode] = useState(""),
     [loadError, setLoadError] = useState("");
-  const loadTelegram = async () => {
+  const loadTelegram = async (signal?: AbortSignal, eventual = false) => {
     try {
       setLoadError("");
-      const value = await get("settings/telegram", decodeTelegram);
+      const value = await (eventual ? getEventually : get)(
+        "settings/telegram",
+        decodeTelegram,
+        signal,
+      );
       setV({ ...value, token: "" });
     } catch (error) {
-      setLoadError(toErrorMessage(error));
+      if (!signal?.aborted) setLoadError(toErrorMessage(error));
     }
   };
   useEffect(() => {
-    void loadTelegram();
+    const controller = new AbortController();
+    void loadTelegram(controller.signal, true);
+    return () => controller.abort();
   }, []);
   if (!v)
     return loadError ? (
@@ -1320,17 +1392,23 @@ function SMTP() {
   const [v, setV] = useState<SMTPSettingsForm | null>(null),
     [msg, setMsg] = useState(""),
     [loadError, setLoadError] = useState("");
-  const loadSMTP = async () => {
+  const loadSMTP = async (signal?: AbortSignal, eventual = false) => {
     try {
       setLoadError("");
-      const value = await get("settings/smtp", decodeSMTP);
+      const value = await (eventual ? getEventually : get)(
+        "settings/smtp",
+        decodeSMTP,
+        signal,
+      );
       setV({ ...value, password: "" });
     } catch (error) {
-      setLoadError(toErrorMessage(error));
+      if (!signal?.aborted) setLoadError(toErrorMessage(error));
     }
   };
   useEffect(() => {
-    void loadSMTP();
+    const controller = new AbortController();
+    void loadSMTP(controller.signal, true);
+    return () => controller.abort();
   }, []);
   if (!v)
     return loadError ? (

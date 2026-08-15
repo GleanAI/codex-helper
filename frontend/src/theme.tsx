@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Theme } from "./types";
-import { get, put, toErrorMessage } from "./api";
+import { get, getEventually, put, toErrorMessage } from "./api";
 import { decodeGeneral } from "./types";
 import { useAuth } from "./auth";
 
@@ -41,7 +41,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!authenticated) return;
     const controller = new AbortController();
-    void get("settings/general", decodeGeneral, controller.signal)
+    void getEventually("settings/general", decodeGeneral, controller.signal)
       .then((settings) => setThemeState(settings.theme))
       .catch((cause) => {
         if (!controller.signal.aborted) setError(toErrorMessage(cause));

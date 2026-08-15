@@ -14,6 +14,8 @@
 
 所有请求使用相对 `/api/v1/`、`credentials: same-origin` 和 `X-Requested-With: codex-helper`，仅 JSON body 设置 content type。请求支持取消和 timeout；非 2xx 响应转换为保留 status 的 `ApiError`，401 会统一回到登录界面。JSON 响应先作为 `unknown`，经端点 decoder 校验后进入组件。新增下载或非 JSON 响应不能直接套用当前 `api` helper。
 
+后台自动读取使用持续重试 helper。网络错误、超时、HTTP 408、429 和 5xx 按 `1s、2s、5s、10s、30s` 递增退避，之后保持每 30 秒重试；页面隐藏或浏览器离线时暂停，重新可见或恢复在线后立即继续。自动读取的瞬时错误不进入页面错误状态。普通 `get` 和所有写请求仍只执行一次，用户主动操作失败必须明确反馈，不得自动重放。总览进入后台时取消当前读取并暂停轮询，回到前台后立即重新读取，已有数据在恢复期间保持显示。
+
 API 类型精确区分后端 `null` 与 optional，并为秘密设置拆分读写形状；空数组及 unknown 套餐按后端返回值处理。邮箱在 Web 界面的账号选择器、总览和设置中统一经过 `maskEmail`；不得把未掩码邮箱添加到新的 Web 可见位置。Telegram `/account` 是独立的已绑定会话输出，当前显示完整邮箱。
 
 ## 总览与设置
