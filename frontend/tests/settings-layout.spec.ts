@@ -202,6 +202,73 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
+test("keeps the account selector and icon-only refresh action compact", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "accounts/1/sync") {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return route.fulfill({ json: { ok: true } });
+    }
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const actions = page.locator(".header-actions");
+  const selector = page.locator(".account-select");
+  const refresh = page.getByRole("button", { name: "立即刷新" });
+  await expect(selector).toBeVisible();
+  await expect(refresh).toBeVisible();
+  await expect(refresh).toHaveText("");
+  await expect(refresh.locator("svg")).toHaveCount(1);
+
+  const geometry = await actions.evaluate((element) => {
+    const selectRect = element.querySelector("select")!.getBoundingClientRect();
+    const buttonRect = element.querySelector("button")!.getBoundingClientRect();
+    return {
+      selectCenter: selectRect.top + selectRect.height / 2,
+      buttonCenter: buttonRect.top + buttonRect.height / 2,
+      buttonWidth: buttonRect.width,
+      buttonHeight: buttonRect.height,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    };
+  });
+  expect(geometry.buttonWidth).toBe(44);
+  expect(geometry.buttonHeight).toBe(44);
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  if ((page.viewportSize()?.width ?? 0) <= 800)
+    expect(
+      Math.abs(geometry.selectCenter - geometry.buttonCenter),
+    ).toBeLessThan(1);
+
+  await refresh.click();
+  const loading = page.getByRole("button", { name: "刷新中" });
+  await expect(loading).toBeDisabled();
+  await expect(loading.locator(".lucide-refresh-cw")).toHaveCount(1);
+  const done = page.getByRole("button", { name: "刷新完成" });
+  await expect(done).toBeEnabled();
+  await expect(done.locator(".lucide-check")).toHaveCount(1);
+});
+
 test("shows history days matching the daily buckets without a pointer focus outline on the chart", async ({
   page,
 }) => {

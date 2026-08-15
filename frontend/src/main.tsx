@@ -486,6 +486,12 @@ function Dashboard() {
         )}
       </>
     );
+  const refreshLabel =
+    refresh === "loading"
+      ? "刷新中"
+      : refresh === "done"
+        ? "刷新完成"
+        : "立即刷新";
   return (
     <>
       <Header title="用量总览">
@@ -506,13 +512,10 @@ function Dashboard() {
             className={"secondary refresh " + refresh}
             disabled={refresh === "loading"}
             onClick={sync}
+            aria-label={refreshLabel}
+            title={refreshLabel}
           >
             {refresh === "done" ? <Check /> : <RefreshCw />}
-            {refresh === "loading"
-              ? "刷新中"
-              : refresh === "done"
-                ? "刷新完成"
-                : "立即刷新"}
           </button>
         </div>
       </Header>

@@ -292,6 +292,7 @@ header p {
 }
 .header-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
 }
 .account-select {
@@ -306,8 +307,14 @@ header p {
   animation: spin 0.8s linear infinite;
 }
 .refresh {
-  width: 116px;
-  white-space: nowrap;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+.refresh svg {
+  width: 20px;
+  height: 20px;
 }
 .refresh.done {
   color: var(--green);
@@ -776,14 +783,13 @@ a {
     font-size: 27px;
   }
   .header-actions {
-    flex-direction: column;
-  }
-  .refresh {
+    flex-direction: row;
     width: 100%;
   }
   .account-select {
+    flex: 1 1 auto;
     min-width: 0;
-    width: 100%;
+    width: 0;
   }
   .balance-header {
     align-items: flex-start;
