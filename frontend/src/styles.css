@@ -344,7 +344,7 @@ header p {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 22px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--border);
 }
 .balance-header > small {
@@ -368,10 +368,10 @@ header p {
 }
 .limit-window {
   min-width: 0;
-  padding: 22px;
+  padding: 16px 20px;
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 16px;
+  gap: 10px 16px;
   align-items: start;
   background: color-mix(in srgb, var(--panel) 94%, transparent);
 }
@@ -380,19 +380,19 @@ header p {
   overflow-wrap: anywhere;
 }
 .balance-empty {
-  padding: 32px 22px;
+  padding: 24px 20px;
   color: var(--muted);
   text-align: center;
 }
 .remaining strong {
   display: block;
-  font-size: 50px;
+  font-size: 46px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--green);
 }
 .remaining strong i {
-  font-size: 20px;
+  font-size: 18px;
   font-style: normal;
 }
 .remaining span,
@@ -400,7 +400,7 @@ header p {
   display: block;
   color: var(--muted);
   font-size: 12px;
-  margin-top: 7px;
+  margin-top: 5px;
 }
 .reset {
   text-align: right;
@@ -408,12 +408,12 @@ header p {
 .reset b {
   display: block;
   font-size: 18px;
-  margin-top: 7px;
+  margin-top: 5px;
 }
 .bar {
   grid-column: 1/-1;
   display: flex;
-  height: 14px;
+  height: 10px;
   border-radius: 99px;
   overflow: hidden;
   background: var(--track);
@@ -788,7 +788,7 @@ a {
   .balance-header {
     align-items: flex-start;
     flex-wrap: wrap;
-    padding: 16px 18px;
+    padding: 14px 18px;
   }
   .balance-meta {
     flex-wrap: wrap;
@@ -910,7 +910,7 @@ a {
   }
   .limit-window {
     grid-template-columns: 1fr;
-    padding: 18px;
+    padding: 16px;
   }
   .reset {
     text-align: left;

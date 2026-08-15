@@ -681,9 +681,18 @@ test("groups account metadata and multiple windows in one balance panel", async 
     windowWidths: Array.from(element.querySelectorAll(".limit-window")).map(
       (window) => window.getBoundingClientRect().width,
     ),
+    headerPaddingTop: getComputedStyle(
+      element.querySelector(".balance-header")!,
+    ).paddingTop,
+    windowPaddingTop: getComputedStyle(element.querySelector(".limit-window")!)
+      .paddingTop,
+    barHeight: element.querySelector(".bar")!.getBoundingClientRect().height,
     documentWidth: document.documentElement.scrollWidth,
     viewportWidth: document.documentElement.clientWidth,
   }));
+  expect(geometry.headerPaddingTop).toBe("14px");
+  expect(geometry.windowPaddingTop).toBe("16px");
+  expect(geometry.barHeight).toBe(10);
   expect(Math.max(...geometry.windowWidths)).toBeLessThanOrEqual(
     geometry.panelWidth,
   );
