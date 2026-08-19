@@ -1191,6 +1191,7 @@ a {
   margin: 0 auto;
   padding: 18px clamp(20px, 3vw, 40px);
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -1279,12 +1280,12 @@ a {
   flex: 1;
   width: min(1600px, 100%);
   margin: 0 auto;
-  padding: 20px clamp(20px, 3vw, 40px) 28px;
+  padding: 20px clamp(32px, 4vw, 64px) 28px;
 }
 .public-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 360px));
+  gap: 14px;
   align-items: start;
 }
 .public-usage-card {
@@ -1298,8 +1299,10 @@ a {
 }
 .public-card-header {
   min-height: 60px;
+  margin: 0;
   padding: 12px 15px;
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1335,7 +1338,7 @@ a {
 }
 .public-connection {
   min-width: 0;
-  padding: 14px 15px 15px;
+  padding: 12px 14px 13px;
   background: var(--panel);
 }
 .public-connection-heading {
@@ -1419,17 +1422,17 @@ a {
 .public-limit {
   min-width: 0;
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-columns: 60px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
+  gap: 10px;
+  padding: 8px 9px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--bg) 45%, var(--panel));
 }
 .public-limit-gauge {
-  width: 64px;
-  height: 64px;
+  width: 60px;
+  height: 60px;
   padding: 5px;
   border-radius: 50%;
   background: conic-gradient(
@@ -1443,7 +1446,7 @@ a {
   display: flex;
   align-items: baseline;
   justify-content: center;
-  padding-top: 17px;
+  padding-top: 15px;
   border-radius: 50%;
   background: var(--panel);
 }
@@ -1533,8 +1536,8 @@ a {
   font-size: 13px;
 }
 .public-footer {
-  min-height: 64px;
-  padding: 16px 20px calc(16px + env(safe-area-inset-bottom));
+  min-height: 56px;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1550,6 +1553,16 @@ a {
 }
 .public-footer a:hover {
   color: var(--accent);
+}
+@media (min-width: 1101px) and (max-width: 1440px) {
+  .public-card-grid {
+    grid-template-columns: repeat(3, minmax(0, 360px));
+  }
+}
+@media (min-width: 721px) and (max-width: 1100px) {
+  .public-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 360px));
+  }
 }
 @media (max-width: 720px) {
   .public-header {
@@ -1573,6 +1586,103 @@ a {
   }
   .public-status time {
     grid-column: 2 / -1;
+  }
+}
+@media (min-width: 721px) and (max-height: 800px) {
+  .public-header {
+    padding-block: 8px;
+  }
+  .public-main {
+    padding-top: 8px;
+    padding-bottom: 10px;
+  }
+  .public-card-header {
+    min-height: 50px;
+    padding: 8px 12px;
+  }
+  .public-card-header h2 {
+    margin-top: 2px;
+  }
+  .public-connection {
+    padding: 10px 12px 11px;
+  }
+  .public-connection-heading div > span {
+    margin-top: 2px;
+  }
+  .public-status {
+    gap: 6px;
+    margin-top: 7px;
+    padding: 6px 8px;
+  }
+  .public-limits {
+    gap: 6px;
+    margin-top: 7px;
+  }
+  .public-limit {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 9px;
+    padding: 6px 8px;
+  }
+  .public-limit-gauge {
+    width: 52px;
+    height: 52px;
+    padding: 4px;
+  }
+  .public-limit-gauge > div {
+    padding-top: 13px;
+  }
+  .public-limit-gauge strong {
+    font-size: 17px;
+  }
+  .public-limit-reset {
+    margin-top: 4px;
+  }
+  .public-footer {
+    min-height: 44px;
+    padding: 7px 16px calc(7px + env(safe-area-inset-bottom));
+  }
+}
+@media (min-width: 721px) and (max-height: 650px) {
+  .public-header {
+    padding-block: 6px;
+  }
+  .public-main {
+    padding-top: 6px;
+    padding-bottom: 8px;
+  }
+  .public-card-header {
+    min-height: 46px;
+    padding: 6px 10px;
+  }
+  .public-connection {
+    padding: 8px 10px 9px;
+  }
+  .public-status {
+    margin-top: 5px;
+    padding-block: 5px;
+  }
+  .public-limits {
+    gap: 4px;
+    margin-top: 5px;
+  }
+  .public-limit {
+    grid-template-columns: 48px minmax(0, 1fr);
+    padding: 4px 7px;
+  }
+  .public-limit-gauge {
+    width: 48px;
+    height: 48px;
+  }
+  .public-limit-gauge > div {
+    padding-top: 11px;
+  }
+  .public-no-limits {
+    margin-top: 5px;
+    padding: 8px;
+  }
+  .public-footer {
+    min-height: 40px;
+    padding-block: 5px calc(5px + env(safe-area-inset-bottom));
   }
 }
 @media (max-width: 379px) {

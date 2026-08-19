@@ -87,6 +87,26 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await expect(page.getByText("test@example.com")).toHaveCount(0);
   await expect(page.getByText("查看详情")).toHaveCount(0);
 
+  const cardSpacing = await page
+    .locator(".public-usage-card")
+    .evaluate((card) => {
+      const header = card.querySelector(".public-card-header");
+      const connections = card.querySelector(".public-connections");
+      const heading = card.querySelector(".public-connection-heading");
+      if (!header || !connections || !heading)
+        throw new Error("卡片结构不完整");
+      const headerRect = header.getBoundingClientRect();
+      return {
+        headerMarginBottom: getComputedStyle(header).marginBottom,
+        connectionGap:
+          connections.getBoundingClientRect().top - headerRect.bottom,
+        headingGap: heading.getBoundingClientRect().top - headerRect.bottom,
+      };
+    });
+  expect(cardSpacing.headerMarginBottom).toBe("0px");
+  expect(Math.abs(cardSpacing.connectionGap)).toBeLessThanOrEqual(1);
+  expect(cardSpacing.headingGap).toBeLessThanOrEqual(14);
+
   const login = page.getByRole("link", { name: "登录" });
   await expect(login).toHaveAttribute("href", "/login");
   const github = page.locator(".public-icon-button");
@@ -151,11 +171,9 @@ test("已登录用户访问根路径仍然看到公开页", async ({ page }) => 
   await expect(page.locator(".public-usage-card")).toBeVisible();
 });
 
-test("公开页在 1920×1080 中紧凑显示四张完整卡片", async ({
-  page,
-}, testInfo) => {
+test("公开页在宽屏中紧凑显示四张完整卡片", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop layout only");
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.setViewportSize({ width: 1920, height: 929 });
   const overview = {
     cards: Array.from({ length: 4 }, (_, index) => ({
       ...publicOverview.cards[0],
@@ -187,6 +205,89 @@ test("公开页在 1920×1080 中紧凑显示四张完整卡片", async ({
   }));
   expect(viewport.documentHeight).toBeLessThanOrEqual(viewport.viewportHeight);
   expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.viewportWidth);
+});
+
+test("公开页适配不同桌面宽度的卡片列数", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout only");
+  const overview = {
+    cards: Array.from({ length: 4 }, (_, index) => ({
+      ...publicOverview.cards[0],
+      title: `a***${index + 1}@e*****e.com`,
+    })),
+  };
+  await mockPublicPage(page, false, overview);
+  await page.goto("/");
+  const usageCards = page.locator(".public-usage-card");
+  await expect(usageCards).toHaveCount(4);
+
+  for (const { width, columns } of [
+    { width: 1920, columns: 4 },
+    { width: 1536, columns: 4 },
+    { width: 1366, columns: 3 },
+    { width: 1024, columns: 2 },
+    { width: 768, columns: 2 },
+  ]) {
+    await page.setViewportSize({ width, height: 650 });
+    const cards = await usageCards.evaluateAll((cards) =>
+      cards.map((card) => {
+        const rect = card.getBoundingClientRect();
+        return { top: Math.round(rect.top), width: rect.width };
+      }),
+    );
+    expect(cards.filter(({ top }) => top === cards[0].top)).toHaveLength(
+      columns,
+    );
+    expect(Math.max(...cards.map((card) => card.width))).toBeLessThanOrEqual(
+      360,
+    );
+    const pageWidth = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(pageWidth.document).toBeLessThanOrEqual(pageWidth.viewport);
+  }
+});
+
+test("公开页常规卡片和页脚适配不同桌面可用高度", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout only");
+  await mockPublicPage(page);
+  await page.goto("/");
+  await expect(page.locator(".public-usage-card")).toBeVisible();
+  await expect(page.locator(".public-footer")).toBeVisible();
+
+  for (const viewport of [
+    { width: 1920, height: 929 },
+    { width: 1536, height: 743 },
+    { width: 1366, height: 650 },
+    { width: 1024, height: 650 },
+    { width: 768, height: 650 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const geometry = await page.evaluate(() => {
+      const card = document.querySelector(".public-usage-card");
+      const footer = document.querySelector(".public-footer");
+      if (!card || !footer) throw new Error("公开页布局不完整");
+      const cardRect = card.getBoundingClientRect();
+      const footerRect = footer.getBoundingClientRect();
+      return {
+        cardLeft: cardRect.left,
+        cardBottom: cardRect.bottom,
+        footerTop: footerRect.top,
+        footerBottom: footerRect.bottom,
+        documentHeight: document.documentElement.scrollHeight,
+        documentWidth: document.documentElement.scrollWidth,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(geometry.cardLeft).toBeGreaterThanOrEqual(31);
+    expect(geometry.cardBottom).toBeLessThanOrEqual(geometry.footerTop);
+    expect(geometry.footerBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    expect(geometry.documentHeight).toBeLessThanOrEqual(
+      geometry.viewportHeight,
+    );
+    expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  }
 });
 
 test("公开页在移动浏览器使用无横向溢出的完整单列卡片", async ({
