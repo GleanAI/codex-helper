@@ -51,19 +51,41 @@ export function UsageConnection({
   error,
   action,
   className = "",
+  stackMonthlyUnderSevenDay = false,
 }: {
   displayName: string;
   kind: string;
   plan: string;
   status: PublicConnectionStatus;
   fetchedAt: number;
-  limits: Array<{ label: string; usedPercent: number; resetsAt: number }>;
+  limits: Array<{
+    label: string;
+    usedPercent: number;
+    resetsAt: number;
+    layout?: "seven-day" | "monthly";
+  }>;
   emptyMessage: string;
   error?: string;
   action?: ReactNode;
   className?: string;
+  stackMonthlyUnderSevenDay?: boolean;
 }) {
   const details = statusDetails[status];
+  const sevenDayIndex = limits.findIndex(
+    (limit) => limit.layout === "seven-day",
+  );
+  const monthlyIndex = limits.findIndex((limit) => limit.layout === "monthly");
+  const stackLimits =
+    stackMonthlyUnderSevenDay && sevenDayIndex >= 0 && monthlyIndex >= 0;
+  const stackWithRegularLimit =
+    stackLimits && limits.some((limit) => limit.layout === undefined);
+  const limitsClassName = [
+    "usage-limits",
+    stackLimits ? "usage-limits-seven-day-monthly" : "",
+    stackWithRegularLimit ? "usage-limits-seven-day-monthly-paired" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <article className={`usage-connection ${className}`.trim()}>
       <div className="usage-connection-heading">
@@ -86,7 +108,7 @@ export function UsageConnection({
       </div>
       {error && <div className="usage-warning">{error}</div>}
       {limits.length > 0 ? (
-        <div className="usage-limits">
+        <div className={limitsClassName}>
           {limits.map((limit, index) => (
             <UsageLimit
               key={`${limit.label}:${limit.resetsAt}:${index}`}
@@ -105,10 +127,12 @@ function UsageLimit({
   label,
   usedPercent,
   resetsAt,
+  layout,
 }: {
   label: string;
   usedPercent: number;
   resetsAt: number;
+  layout?: "seven-day" | "monthly";
 }) {
   const used = Math.min(100, Math.max(0, usedPercent));
   const left = 100 - used;
@@ -118,7 +142,7 @@ function UsageLimit({
     "--gauge-color": `hsl(${left * 1.2} 70% 45%)`,
   } as CSSProperties;
   return (
-    <div className="usage-limit">
+    <div className={`usage-limit${layout ? ` usage-limit-${layout}` : ""}`}>
       <div
         className="usage-limit-gauge"
         style={gaugeStyle}

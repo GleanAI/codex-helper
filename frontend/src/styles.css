@@ -350,9 +350,45 @@ header p {
   gap: 14px;
   align-items: start;
 }
+.overview-card-placeholder {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+}
 @media (min-width: 801px) {
   .overview-connection .usage-limits {
     grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+  }
+  .overview-connection .usage-limits-seven-day-monthly {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .overview-connection .usage-limits-seven-day-monthly-paired {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .overview-connection
+    .usage-limits-seven-day-monthly-paired
+    > .usage-limit:not(.usage-limit-seven-day):not(.usage-limit-monthly) {
+    grid-column: 1;
+  }
+  .overview-connection
+    .usage-limits-seven-day-monthly-paired
+    > .usage-limit-seven-day {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .overview-connection
+    .usage-limits-seven-day-monthly-paired
+    > .usage-limit-monthly {
+    grid-column: 2;
+    grid-row: 2;
   }
 }
 @media (min-width: 900px) {

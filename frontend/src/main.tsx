@@ -1,4 +1,11 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
+import React, {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
@@ -48,7 +55,7 @@ import {
   type SMTPSettingsForm,
   type TelegramSettingsForm,
 } from "./types";
-import { groupAccounts } from "./overview";
+import { groupAccounts, type AccountGroup } from "./overview";
 import PublicPage from "./public-page";
 import { kindLabel, planLabel, UsageCard, UsageConnection } from "./usage-card";
 import "./styles.css";
@@ -475,36 +482,97 @@ function OverviewPage() {
       {error && <div className="banner">{error}</div>}
       <div className="overview-grid">
         {groupAccounts(accounts).map((group) => (
-          <UsageCard
-            className={
-              group.accounts.length > 1
-                ? "overview-card overview-card-wide"
-                : "overview-card"
-            }
-            title={
-              group.email
-                ? maskEmail(group.email)
-                : group.accounts[0].displayName
-            }
-            emailIdentified={Boolean(group.email)}
-            connectionCount={group.accounts.length}
-            key={group.key}
-          >
-            {group.accounts.map((account) => (
-              <OverviewConnection account={account} key={account.id} />
-            ))}
-          </UsageCard>
+          <OverviewGroupCard group={group} key={group.key} />
         ))}
       </div>
     </>
   );
 }
 
-function OverviewConnection({ account }: { account: Account }) {
-  const navigate = useNavigate();
-  const [dashboard, setDashboard] = useState<Dash | null>(null);
-  const [error, setError] = useState("");
+type OverviewDashboardState = {
+  dashboard: Dash | null;
+  error: string;
+  settled: boolean;
+};
 
+function OverviewGroupCard({ group }: { group: AccountGroup }) {
+  const [connections, setConnections] = useState<
+    Record<number, OverviewDashboardState>
+  >({});
+  const updateConnection = useCallback(
+    (accountId: number, update: Partial<OverviewDashboardState>) => {
+      setConnections((current) => {
+        const existing = current[accountId] ?? {
+          dashboard: null,
+          error: "",
+          settled: false,
+        };
+        return {
+          ...current,
+          [accountId]: { ...existing, ...update },
+        };
+      });
+    },
+    [],
+  );
+  const wide = group.accounts.length > 1;
+  const ready = group.accounts.every(
+    (account) => connections[account.id]?.settled,
+  );
+
+  return (
+    <>
+      {group.accounts.map((account) => (
+        <OverviewDashboardLoader
+          accountId={account.id}
+          key={account.id}
+          onUpdate={updateConnection}
+        />
+      ))}
+      {ready ? (
+        <UsageCard
+          className={
+            wide ? "overview-card overview-card-wide" : "overview-card"
+          }
+          title={
+            group.email ? maskEmail(group.email) : group.accounts[0].displayName
+          }
+          emailIdentified={Boolean(group.email)}
+          connectionCount={group.accounts.length}
+        >
+          {group.accounts.map((account) => (
+            <OverviewConnection
+              account={account}
+              dashboard={connections[account.id].dashboard}
+              error={connections[account.id].error}
+              key={account.id}
+            />
+          ))}
+        </UsageCard>
+      ) : (
+        <div
+          aria-busy="true"
+          className={`overview-card-placeholder${wide ? " overview-card-wide" : ""}`}
+          role="status"
+        >
+          <div className="spinner" />
+          <span>正在读取账号用量…</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+function OverviewDashboardLoader({
+  accountId,
+  onUpdate,
+}: {
+  accountId: number;
+  onUpdate: (
+    accountId: number,
+    update: Partial<OverviewDashboardState>,
+  ) => void;
+}) {
   useEffect(() => {
     let stopped = false;
     let running = false;
@@ -519,16 +587,18 @@ function OverviewConnection({ account }: { account: Account }) {
       const requestController = controller;
       try {
         const next = await getEventually(
-          `dashboard?accountId=${account.id}`,
+          `dashboard?accountId=${accountId}`,
           decodeDashboard,
           requestController.signal,
         );
         if (stopped) return;
-        setDashboard(next);
-        setError("");
+        onUpdate(accountId, { dashboard: next, error: "", settled: true });
       } catch (requestError) {
         if (!requestController.signal.aborted)
-          setError(toErrorMessage(requestError));
+          onUpdate(accountId, {
+            error: toErrorMessage(requestError),
+            settled: true,
+          });
       }
       running = false;
       if (controller === requestController) controller = null;
@@ -560,7 +630,21 @@ function OverviewConnection({ account }: { account: Account }) {
       window.removeEventListener("offline", availabilityChanged);
       document.removeEventListener("visibilitychange", availabilityChanged);
     };
-  }, [account.id]);
+  }, [accountId, onUpdate]);
+
+  return null;
+}
+
+function OverviewConnection({
+  account,
+  dashboard,
+  error,
+}: {
+  account: Account;
+  dashboard: Dash | null;
+  error: string;
+}) {
+  const navigate = useNavigate();
 
   const dashboardFailed = Boolean(error || dashboard?.lastError);
   const statusTone: PublicConnectionStatus = !account.connected
@@ -579,17 +663,27 @@ function OverviewConnection({ account }: { account: Account }) {
     navigate("/details");
   };
 
-  const limits =
+  const limits: Array<{
+    label: string;
+    usedPercent: number;
+    resetsAt: number;
+    layout?: "seven-day" | "monthly";
+  }> =
     dashboard?.limits.map((limit) => ({
       label: limitWindowLabel(limit),
       usedPercent: limit.usedPercent,
       resetsAt: limit.resetsAt,
+      layout:
+        limit.windowDurationMinutes === 10_080
+          ? ("seven-day" as const)
+          : undefined,
     })) ?? [];
   if (dashboard?.monthlyCreditLimit)
     limits.push({
       label: "月度额度",
       usedPercent: 100 - dashboard.monthlyCreditLimit.remainingPercent,
       resetsAt: dashboard.monthlyCreditLimit.resetsAt,
+      layout: "monthly" as const,
     });
 
   return (
@@ -601,6 +695,7 @@ function OverviewConnection({ account }: { account: Account }) {
       status={statusTone}
       fetchedAt={dashboard?.fetchedAt ?? 0}
       limits={limits}
+      stackMonthlyUnderSevenDay={account.actualKind === "team"}
       emptyMessage={
         !dashboard && !error
           ? "正在读取限额…"

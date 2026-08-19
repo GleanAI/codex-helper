@@ -331,7 +331,7 @@ test("overview merges personal and Team connections for the same email", async (
     if (key === "accounts") return route.fulfill({ json: accounts });
     if (key === "dashboard") {
       const accountId = Number(requestUrl.searchParams.get("accountId"));
-      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 1 : 0;
+      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 3 : 0;
       return route.fulfill({
         json: {
           accountId,
@@ -346,7 +346,12 @@ test("overview merges personal and Team connections for the same email", async (
             limitName: index ? "Review" : "Codex",
             windowType: index ? "secondary" : "primary",
             usedPercent: accountId === 1 ? 25 + index * 35 : 40,
-            windowDurationMinutes: index ? 43_200 : 10_080,
+            windowDurationMinutes:
+              accountId === 2
+                ? [300, 10_080, 43_200][index]
+                : index
+                  ? 43_200
+                  : 10_080,
             resetsAt: Math.floor(Date.now() / 1000) + 604_800,
           })),
           monthlyCreditLimit:
@@ -378,7 +383,7 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(
     merged.getByText("Team / Business 工作区", { exact: true }),
   ).toBeVisible();
-  await expect(merged.locator(".usage-limit")).toHaveCount(4);
+  await expect(merged.locator(".usage-limit")).toHaveCount(6);
   await expect(
     merged.locator('.usage-limit-gauge[aria-label*="剩余 75%"]'),
   ).toBeVisible();
@@ -393,6 +398,9 @@ test("overview merges personal and Team connections for the same email", async (
       '.usage-limit-gauge[aria-label="月度额度：剩余 100%"]',
     ),
   ).toBeVisible();
+  await expect(
+    teamConnection.locator(".usage-limits > .usage-limit").last(),
+  ).toHaveClass(/usage-limit-monthly/);
   await expect(merged.getByText("下次重置").first()).toBeVisible();
   await expect(
     cards
@@ -404,11 +412,16 @@ test("overview merges personal and Team connections for the same email", async (
 
   const geometry = await merged.evaluate((element) => {
     const title = element.querySelector(".usage-card-header h2");
-    const teamLimits = Array.from(
-      element.querySelectorAll(
-        ".overview-connection:nth-child(2) .usage-limit",
-      ),
+    const teamConnection = element.querySelector(
+      ".overview-connection:nth-child(2)",
     );
+    const shortLimit = teamConnection?.querySelector(
+      ".usage-limits > .usage-limit",
+    );
+    const sevenDayLimit = teamConnection?.querySelector(
+      ".usage-limit-seven-day",
+    );
+    const monthlyLimit = teamConnection?.querySelector(".usage-limit-monthly");
     const titleRect = title?.getBoundingClientRect();
     const titleLineHeight = title
       ? Number.parseFloat(getComputedStyle(title).lineHeight)
@@ -422,8 +435,21 @@ test("overview merges personal and Team connections for the same email", async (
         titleRect && titleLineHeight
           ? Math.round(titleRect.height / titleLineHeight)
           : 0,
-      teamLimitTops: teamLimits.map((limit) =>
-        Math.round(limit.getBoundingClientRect().top),
+      shortTop: Math.round(shortLimit?.getBoundingClientRect().top ?? 0),
+      sevenDayTop: Math.round(sevenDayLimit?.getBoundingClientRect().top ?? 0),
+      sevenDayLeft: Math.round(
+        sevenDayLimit?.getBoundingClientRect().left ?? 0,
+      ),
+      sevenDayWidth: Math.round(
+        sevenDayLimit?.getBoundingClientRect().width ?? 0,
+      ),
+      sevenDayBottom: Math.round(
+        sevenDayLimit?.getBoundingClientRect().bottom ?? 0,
+      ),
+      monthlyTop: Math.round(monthlyLimit?.getBoundingClientRect().top ?? 0),
+      monthlyLeft: Math.round(monthlyLimit?.getBoundingClientRect().left ?? 0),
+      monthlyWidth: Math.round(
+        monthlyLimit?.getBoundingClientRect().width ?? 0,
       ),
       viewportWidth: document.documentElement.clientWidth,
       documentWidth: document.documentElement.scrollWidth,
@@ -443,7 +469,10 @@ test("overview merges personal and Team connections for the same email", async (
     expect(geometry.cardWidth).toBeGreaterThanOrEqual(600);
     expect(new Set(cardTops).size).toBe(1);
     expect(geometry.titleLines).toBe(1);
-    expect(new Set(geometry.teamLimitTops).size).toBe(1);
+    expect(geometry.shortTop).toBe(geometry.sevenDayTop);
+    expect(geometry.monthlyTop).toBeGreaterThanOrEqual(geometry.sevenDayBottom);
+    expect(geometry.monthlyLeft).toBe(geometry.sevenDayLeft);
+    expect(geometry.monthlyWidth).toBe(geometry.sevenDayWidth);
     expect(geometry.documentHeight).toBeLessThanOrEqual(
       geometry.viewportHeight,
     );
@@ -557,27 +586,53 @@ test("overview uses adaptive account columns across desktop sizes", async ({
   ).toBeGreaterThanOrEqual(280);
 });
 
-test("overview does not report a connection as healthy before its dashboard loads", async ({
+test("overview mounts each complete card only after its dashboard loads", async ({
   page,
 }) => {
-  let releaseDashboard = () => undefined;
-  const dashboardGate = new Promise<void>((resolve) => {
-    releaseDashboard = resolve;
+  const accounts = [
+    responses.accounts[0],
+    {
+      ...responses.accounts[0],
+      id: 2,
+      displayName: "较慢账号",
+      email: "slow@example.com",
+    },
+  ];
+  let releaseFirst = () => undefined;
+  let releaseSecond = () => undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
   });
   await page.route("**/api/v1/**", async (route) => {
-    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    const requestUrl = new URL(route.request().url());
+    const key = requestUrl.pathname.replace("/api/v1/", "");
+    if (key === "accounts") return route.fulfill({ json: accounts });
     if (key === "dashboard") {
-      await dashboardGate;
+      const accountId = Number(requestUrl.searchParams.get("accountId"));
+      await (accountId === 1 ? firstGate : secondGate);
       return route.fulfill({
         json: {
-          accountId: 1,
-          displayName: "默认账号",
+          accountId,
+          displayName: accounts[accountId - 1].displayName,
           account: {
-            email: "test@example.com",
+            email: accounts[accountId - 1].email,
             planType: "plus",
             connected: true,
           },
-          limits: [],
+          limits: [
+            {
+              limitId: "codex",
+              limitName: "Codex",
+              windowType: "primary",
+              usedPercent: 25,
+              windowDurationMinutes: 300,
+              resetsAt: Math.floor(Date.now() / 1000) + 18_000,
+            },
+          ],
+          monthlyCreditLimit: null,
           summary: {},
           usage: [],
           fetchedAt: 0,
@@ -589,13 +644,28 @@ test("overview does not report a connection as healthy before its dashboard load
   });
 
   await page.goto("/overview");
-  const connection = page.locator(".overview-connection");
-  await expect(connection.getByText("正在读取", { exact: true })).toBeVisible();
-  await expect(connection.locator(".usage-status-loading")).toBeVisible();
-  await expect(connection.locator(".usage-status-healthy")).toHaveCount(0);
-  releaseDashboard();
-  await expect(connection.getByText("运行正常", { exact: true })).toBeVisible();
-  await expect(connection.locator(".usage-status-healthy")).toBeVisible();
+  await expect(page.locator(".overview-card-placeholder")).toHaveCount(2);
+  await expect(page.locator(".overview-card")).toHaveCount(0);
+
+  releaseFirst();
+  const firstCard = page.locator(".overview-card", {
+    hasText: "t**t@e*****e.com",
+  });
+  await expect(firstCard).toBeVisible();
+  await expect(firstCard.locator(".usage-status-healthy")).toBeVisible();
+  await expect(firstCard.locator(".usage-limit")).toHaveCount(1);
+  await expect(
+    firstCard.getByRole("button", { name: "查看详情" }),
+  ).toBeVisible();
+  await expect(page.locator(".overview-card-placeholder")).toHaveCount(1);
+  await expect(page.locator(".overview-card")).toHaveCount(1);
+  const initialBox = await firstCard.boundingBox();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  expect(await firstCard.boundingBox()).toEqual(initialBox);
+
+  releaseSecond();
+  await expect(page.locator(".overview-card-placeholder")).toHaveCount(0);
+  await expect(page.locator(".overview-card")).toHaveCount(2);
 });
 
 test("overview keeps healthy connections visible when one dashboard fails", async ({
