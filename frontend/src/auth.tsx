@@ -23,7 +23,7 @@ type AuthContextValue = {
     password: string,
     timezone: string,
   ) => Promise<void>;
-  logout: () => Promise<void>;
+  logout: (onSuccess?: () => void) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -103,8 +103,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         data: { status: { ...status, initialized: true }, authenticated: true },
       });
     },
-    logout: async () => {
+    logout: async (onSuccess) => {
       await post("auth/logout", decodeOK);
+      onSuccess?.();
       setState({ status: "success", data: { status, authenticated: false } });
     },
   };

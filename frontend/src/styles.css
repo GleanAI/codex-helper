@@ -212,6 +212,29 @@ button svg {
   overflow: hidden;
   clip: rect(0 0 0 0);
 }
+.login-public-link {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.login-public-link:hover {
+  background: var(--track);
+}
+.login-public-link:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 3px;
+}
+.login-public-link svg {
+  width: 17px;
+}
 .error {
   color: var(--danger) !important;
 }
@@ -1083,14 +1106,6 @@ a {
   width: 19px;
   color: var(--accent);
 }
-.public-brand small {
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 99px;
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0;
-}
 .public-actions {
   flex-direction: row;
   align-items: center;
@@ -1126,6 +1141,11 @@ a {
   border-color: transparent;
   background: var(--text);
   color: var(--bg);
+}
+.public-login-button-authenticated {
+  border-color: color-mix(in srgb, var(--green) 60%, var(--border));
+  background: color-mix(in srgb, var(--green) 12%, var(--panel));
+  color: var(--green);
 }
 .public-icon-button:hover,
 .public-login-button:hover {
@@ -1588,7 +1608,6 @@ a {
     width: 34px;
     height: 34px;
   }
-  .public-brand small,
   .public-login-button svg {
     display: none;
   }

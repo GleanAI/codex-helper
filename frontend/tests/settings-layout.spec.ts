@@ -164,7 +164,9 @@ test("enters the authenticated overview after initial setup", async ({
   await expect(page.getByRole("heading", { name: "用量总览" })).toBeVisible();
 });
 
-test("shows the build version on login", async ({ page }) => {
+test("login hides the build version and links back to the public page", async ({
+  page,
+}) => {
   await page.route("**/api/v1/system/status", (route) =>
     route.fulfill({
       json: { initialized: true, appServer: false, version: "test" },
@@ -173,10 +175,13 @@ test("shows the build version on login", async ({ page }) => {
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ status: 401, json: { error: "unauthorized" } }),
   );
+  await page.route("**/api/v1/public/overview", (route) =>
+    route.fulfill({ json: { cards: [] } }),
+  );
   await page.goto("/login");
-  const badge = page.locator(".login .version-badge");
-  await expect(badge).toBeVisible();
-  await expect(badge).toHaveText("vtest");
+  await expect(page.locator(".login .version-badge")).toHaveCount(0);
+  const publicPage = page.getByRole("link", { name: "返回公开页面" });
+  await expect(publicPage).toHaveAttribute("href", "/");
   const github = page.getByRole("link", {
     name: "在 GitHub 上查看 Codex Helper",
   });
@@ -185,6 +190,9 @@ test("shows the build version on login", async ({ page }) => {
     "https://github.com/GleanAI/codex-helper",
   );
   await expect(github).toHaveAttribute("target", "_blank");
+
+  await publicPage.click();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("shows the GitHub link after login", async ({ page }) => {
@@ -199,6 +207,20 @@ test("shows the GitHub link after login", async ({ page }) => {
     "href",
     "https://github.com/GleanAI/codex-helper",
   );
+});
+
+test("links from the authenticated utility area to the public page", async ({
+  page,
+}) => {
+  await openSettings(page);
+  if ((page.viewportSize()?.width ?? 0) <= 800)
+    await page.getByRole("button", { name: "打开更多操作" }).click();
+  const publicPage = page.getByRole("link", { name: "公开页面" });
+  await expect(publicPage).toBeVisible();
+  await expect(publicPage).toHaveAttribute("href", "/");
+
+  await publicPage.click();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("redirects authenticated login and unknown paths to overview", async ({
@@ -217,15 +239,38 @@ test("redirects authenticated login and unknown paths to overview", async ({
   await expect(page).toHaveURL(/\/overview$/);
 });
 
-test("logout redirects to the dedicated login page", async ({ page }) => {
+test("logout redirects to the public page", async ({ page }) => {
   await openSettings(page);
   if ((page.viewportSize()?.width ?? 0) <= 800)
     await page.getByRole("button", { name: "打开更多操作" }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "退出" }).click();
 
-  await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("heading", { name: "欢迎回来" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator(".public-header")).toBeVisible();
+});
+
+test("cancelled or failed logout stays in the authenticated shell", async ({
+  page,
+}) => {
+  await openSettings(page);
+  if ((page.viewportSize()?.width ?? 0) <= 800)
+    await page.getByRole("button", { name: "打开更多操作" }).click();
+  const logout = page.getByRole("button", { name: "退出" });
+
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await logout.click();
+  await expect(page).toHaveURL(/\/settings$/);
+
+  await page.route("**/api/v1/auth/logout", (route) =>
+    route.fulfill({ status: 500, json: { error: "退出失败" } }),
+  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await logout.click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(
+    page.locator("small.error:visible").filter({ hasText: "退出失败" }),
+  ).toBeVisible();
 });
 
 test("mobile shell exposes accessible navigation without covering content", async ({

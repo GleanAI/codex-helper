@@ -4,7 +4,7 @@
 
 ## 镜像结构
 
-`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.6 以 `CGO_ENABLED=0` 构建后端；Node 阶段默认解析并安装 npm registry 中 `@openai/codex` 的 `latest`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。`APP_VERSION` 构建参数通过 Go linker 注入状态 API，未指定时默认为 `0.2.0`，前端在品牌区域显示该版本。
+`Dockerfile` 有四个阶段：Node 24.19.0 构建 React 静态资源；Go 1.26.6 以 `CGO_ENABLED=0` 构建后端；Node 阶段默认解析并安装 npm registry 中 `@openai/codex` 的 `latest`；最终 Debian bookworm 镜像只包含 CA、时区、后端、Node runtime 和 Codex 包。`APP_VERSION` 构建参数通过 Go linker 注入状态 API，未指定时默认为 `0.2.0`，前端在初始化页和管理后台品牌区域显示该版本。
 
 Codex 阶段将请求版本对应的 npm 元数据作为构建缓存输入，并从中读取确切版本后安装。每次构建都会检查该元数据；`latest` 指向新版本时只会使 Codex 阶段及其依赖层失效，前后端未变化的构建层仍可复用。已经生成的镜像不会自行升级。需要回滚或验证兼容性时，可通过 `--build-arg CODEX_VERSION=0.147.0` 指定确切版本；该参数同样接受 npm registry 可解析的其他版本标识。
 
@@ -26,7 +26,7 @@ bash push-image.sh 0.3.0
 
 ## Compose 与持久化
 
-`docker-compose.yml` 本地构建 `codex-helper:latest`，并通过 `APP_VERSION=dev` 让界面版本徽标显示为 `vdev`；它将宿主机 8180 映射到容器 8080，并把命名卷 `codex-helper-data` 挂载到 `/data`。全部数据库、密钥、Codex 配置和多账号凭据都依赖这个卷。
+`docker-compose.yml` 本地构建 `codex-helper:latest`，并通过 `APP_VERSION=dev` 让初始化页和管理后台的版本徽标显示为 `vdev`；它将宿主机 8180 映射到容器 8080，并把命名卷 `codex-helper-data` 挂载到 `/data`。全部数据库、密钥、Codex 配置和多账号凭据都依赖这个卷。
 
 `docker-compose.release.yml` 不在本地构建，而是固定拉取 `koalalove/codex-helper:latest`；该镜像的界面版本由 `push-image.sh` 发布时传入的真实版本号决定，不受开发版 `APP_VERSION=dev` 影响。它将宿主机 8180 映射到容器 8080，并将完整 `/data` 通过 bind mount 保存到 `./data`；该文件不依赖 `.env`。由于应用以 UID/GID `10001` 运行，首次启动前必须创建该目录并将其所有者设为 `10001:10001`：
 

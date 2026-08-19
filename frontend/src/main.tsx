@@ -9,6 +9,7 @@ import React, {
 import { createRoot } from "react-dom/client";
 import {
   BrowserRouter,
+  Link,
   Navigate,
   Route,
   Routes,
@@ -17,9 +18,11 @@ import {
 } from "react-router-dom";
 import {
   Activity,
+  ArrowLeft,
   Bell,
   Check,
   Github,
+  Globe2,
   LayoutDashboard,
   LogOut,
   Moon,
@@ -79,6 +82,15 @@ function GitHubLink({ className = "" }: { className?: string }) {
   );
 }
 
+function PublicPageLink() {
+  return (
+    <Link className="github-link" to="/">
+      <Globe2 />
+      <span>公开页面</span>
+    </Link>
+  );
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -92,16 +104,12 @@ function AppRoutes() {
   if (!status.initialized) return <Setup version={status.version} />;
   return (
     <Routes>
-      <Route path="/" element={<PublicPage version={status.version} />} />
+      <Route path="/" element={<PublicPage authenticated={authenticated} />} />
       <Route path="/public" element={<Navigate to="/" replace />} />
       <Route
         path="/login"
         element={
-          authenticated ? (
-            <Navigate to="/overview" replace />
-          ) : (
-            <Login version={status.version} />
-          )
+          authenticated ? <Navigate to="/overview" replace /> : <Login />
         }
       />
       {authenticated ? (
@@ -196,7 +204,7 @@ function Setup({ version }: { version: string }) {
     </main>
   );
 }
-function Login({ version }: { version: string }) {
+function Login() {
   const { login } = useAuth();
   const [u, setU] = useState("admin"),
     [p, setP] = useState(""),
@@ -215,7 +223,7 @@ function Login({ version }: { version: string }) {
         }}
       >
         <GitHubLink className="login-github" />
-        <Brand version={version} />
+        <Brand />
         <h2>欢迎回来</h2>
         <label>
           用户名
@@ -231,6 +239,10 @@ function Login({ version }: { version: string }) {
         </label>
         {e && <p className="error">{e}</p>}
         <button>登录</button>
+        <Link className="login-public-link" to="/">
+          <ArrowLeft />
+          返回公开页面
+        </Link>
       </form>
     </main>
   );
@@ -269,7 +281,7 @@ function Shell({ version }: { version: string }) {
     if (!confirm("确定要退出 Codex Helper 管理后台吗？")) return;
     try {
       setShellError("");
-      await logout();
+      await logout(() => window.location.replace("/"));
     } catch (error) {
       setShellError(toErrorMessage(error));
     }
@@ -309,6 +321,7 @@ function Shell({ version }: { version: string }) {
           </button>
         </nav>
         <div className="aside-bottom">
+          <PublicPageLink />
           <GitHubLink />
           <button onClick={changeTheme}>
             {theme === "dark" ? <Sun /> : <Moon />}切换主题
@@ -336,6 +349,7 @@ function Shell({ version }: { version: string }) {
           </button>
           {mobileMenuOpen && (
             <div id="mobile-actions" className="mobile-menu-popover">
+              <PublicPageLink />
               <GitHubLink />
               <button onClick={changeTheme}>
                 {theme === "dark" ? <Sun /> : <Moon />}切换主题

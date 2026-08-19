@@ -90,6 +90,7 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await expect(page.getByText("数据可能已过期", { exact: true })).toBeVisible();
   await expect(page.getByText("test@example.com")).toHaveCount(0);
   await expect(page.getByText("查看详情")).toHaveCount(0);
+  await expect(page.locator(".public-brand small")).toHaveCount(0);
 
   const cardSpacing = await page
     .locator(".public-usage-card")
@@ -173,6 +174,15 @@ test("已登录用户访问根路径仍然看到公开页", async ({ page }) => 
 
   await expect(page).toHaveURL(/\/$/);
   await expect(page.locator(".public-usage-card")).toBeVisible();
+  const authenticated = page.getByRole("link", {
+    name: "已登录，进入管理后台",
+  });
+  await expect(authenticated).toContainText("已登录");
+  await expect(authenticated).toHaveAttribute("href", "/overview");
+  await expect(authenticated).toHaveAttribute("title", "已登录，进入管理后台");
+  await expect(
+    page.getByRole("link", { name: "登录", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("公开页在宽屏中紧凑显示四张完整卡片", async ({ page }, testInfo) => {

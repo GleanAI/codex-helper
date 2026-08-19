@@ -1,4 +1,4 @@
-import { Github, LogIn, Zap } from "lucide-react";
+import { Github, LogIn, ShieldCheck, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getEventually, toErrorMessage } from "./api";
@@ -13,7 +13,11 @@ import {
 
 const repositoryURL = "https://github.com/GleanAI/codex-helper";
 
-export default function PublicPage({ version }: { version: string }) {
+export default function PublicPage({
+  authenticated,
+}: {
+  authenticated: boolean;
+}) {
   const [overview, setOverview] = useState<PublicOverview | null>(null);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -84,7 +88,6 @@ export default function PublicPage({ version }: { version: string }) {
             <Zap />
           </span>
           <span>Codex Helper</span>
-          <small>v{version}</small>
         </div>
         <nav className="public-actions" aria-label="公开页面操作">
           <a
@@ -97,9 +100,16 @@ export default function PublicPage({ version }: { version: string }) {
           >
             <Github />
           </a>
-          <Link className="public-login-button" to="/login">
-            <LogIn />
-            登录
+          <Link
+            aria-label={authenticated ? "已登录，进入管理后台" : undefined}
+            className={`public-login-button${
+              authenticated ? " public-login-button-authenticated" : ""
+            }`}
+            title={authenticated ? "已登录，进入管理后台" : undefined}
+            to={authenticated ? "/overview" : "/login"}
+          >
+            {authenticated ? <ShieldCheck /> : <LogIn />}
+            {authenticated ? "已登录" : "登录"}
           </Link>
         </nav>
       </header>
