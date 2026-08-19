@@ -7,6 +7,7 @@ const responses: Record<string, unknown> = {
     version: "0.3.0-beta.1",
   },
   "auth/me": { username: "admin" },
+  "auth/logout": { ok: true },
   "settings/general": {
     timezone: "America/New_York",
     theme: "system",
@@ -139,6 +140,30 @@ test("shows the build version before setup", async ({ page }) => {
   await expect(badge).toHaveText("vtest");
 });
 
+test("enters the authenticated overview after initial setup", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "system/status")
+      return route.fulfill({
+        json: { initialized: false, appServer: false, version: "test" },
+      });
+    if (key === "setup") return route.fulfill({ json: { ok: true } });
+    if (key === "accounts") return route.fulfill({ json: [] });
+    if (key === "settings/general")
+      return route.fulfill({ json: responses["settings/general"] });
+    return route.fulfill({ status: 404, json: { error: "接口不存在" } });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("密码").fill("test-password");
+  await page.getByRole("button", { name: "完成初始化" }).click();
+
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole("heading", { name: "用量总览" })).toBeVisible();
+});
+
 test("shows the build version on login", async ({ page }) => {
   await page.route("**/api/v1/system/status", (route) =>
     route.fulfill({
@@ -148,7 +173,7 @@ test("shows the build version on login", async ({ page }) => {
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ status: 401, json: { error: "unauthorized" } }),
   );
-  await page.goto("/");
+  await page.goto("/login");
   const badge = page.locator(".login .version-badge");
   await expect(badge).toBeVisible();
   await expect(badge).toHaveText("vtest");
@@ -176,6 +201,33 @@ test("shows the GitHub link after login", async ({ page }) => {
   );
 });
 
+test("redirects authenticated login and unknown paths to overview", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/**", (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/login");
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole("heading", { name: "用量总览" })).toBeVisible();
+
+  await page.goto("/not-a-real-page");
+  await expect(page).toHaveURL(/\/overview$/);
+});
+
+test("logout redirects to the dedicated login page", async ({ page }) => {
+  await openSettings(page);
+  if ((page.viewportSize()?.width ?? 0) <= 800)
+    await page.getByRole("button", { name: "打开更多操作" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "退出" }).click();
+
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("heading", { name: "欢迎回来" })).toBeVisible();
+});
+
 test("mobile shell exposes accessible navigation without covering content", async ({
   page,
 }) => {
@@ -199,7 +251,7 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   expect(geometry.contentBottom).toBeLessThanOrEqual(geometry.navTop);
   await expect(nav).toBeVisible();
   await page.getByRole("button", { name: "总览", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/overview$/);
 });
 
 test("keeps primary page headings aligned across routes", async ({ page }) => {
@@ -231,7 +283,7 @@ test("keeps primary page headings aligned across routes", async ({ page }) => {
       return { x: rect.x, y: rect.y };
     });
 
-  await page.goto("/");
+  await page.goto("/overview");
   await expect(page.locator(".overview-card")).toBeVisible();
   const overview = await headingPosition("用量总览");
 
@@ -314,7 +366,7 @@ test("overview merges personal and Team connections for the same email", async (
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/overview");
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(2);
   const merged = cards.filter({ hasText: "t**t@e*****e.com" });
@@ -411,7 +463,7 @@ test("overview uses compact columns across desktop sizes", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/overview");
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(4);
   await expect(
@@ -477,7 +529,7 @@ test("overview does not report a connection as healthy before its dashboard load
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/overview");
   const connection = page.locator(".overview-connection");
   await expect(connection.getByText("正在读取", { exact: true })).toBeVisible();
   await expect(
@@ -533,7 +585,7 @@ test("overview keeps healthy connections visible when one dashboard fails", asyn
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/overview");
   await expect(
     page
       .locator(".overview-card", { hasText: "t**t@e*****e.com" })
@@ -583,7 +635,7 @@ test("overview refreshes immediately after returning online", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/overview");
   await expect(page.locator(".overview-connection")).toHaveCount(1);
   await expect.poll(() => dashboardRequests).toBe(1);
 
@@ -1296,6 +1348,7 @@ test("returns to login when an authenticated request receives 401", async ({
   await page.goto("/details");
   await expect(page.locator(".account-select")).toBeVisible();
   await page.getByRole("button", { name: "立即刷新" }).click();
+  await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole("heading", { name: "欢迎回来" })).toBeVisible();
 });
 

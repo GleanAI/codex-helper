@@ -71,22 +71,36 @@ function GitHubLink({ className = "" }: { className?: string }) {
 }
 
 function App() {
+  return (
+    <BrowserRouter>
+      <AppRoutes />
+    </BrowserRouter>
+  );
+}
+
+function AppRoutes() {
   const { status, authenticated } = useAuth();
   if (!status.initialized) return <Setup version={status.version} />;
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route
-          path="/public"
-          element={<PublicPage version={status.version} />}
-        />
-        {authenticated ? (
-          <Route path="*" element={<Shell version={status.version} />} />
-        ) : (
-          <Route path="*" element={<Login version={status.version} />} />
-        )}
-      </Routes>
-    </BrowserRouter>
+    <Routes>
+      <Route path="/" element={<PublicPage version={status.version} />} />
+      <Route path="/public" element={<Navigate to="/" replace />} />
+      <Route
+        path="/login"
+        element={
+          authenticated ? (
+            <Navigate to="/overview" replace />
+          ) : (
+            <Login version={status.version} />
+          )
+        }
+      />
+      {authenticated ? (
+        <Route path="*" element={<Shell version={status.version} />} />
+      ) : (
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      )}
+    </Routes>
   );
 }
 const Splash = () => (
@@ -107,6 +121,7 @@ function Brand({ version }: { version?: string }) {
 }
 function Setup({ version }: { version: string }) {
   const { setup } = useAuth();
+  const navigate = useNavigate();
   const [form, set] = useState({
     username: "admin",
     password: "",
@@ -117,6 +132,7 @@ function Setup({ version }: { version: string }) {
     e.preventDefault();
     try {
       await setup(form.username, form.password, form.timezone);
+      navigate("/overview", { replace: true });
     } catch (x) {
       setErr(toErrorMessage(x));
     }
@@ -255,9 +271,11 @@ function Shell({ version }: { version: string }) {
         <Brand version={version} />
         <nav>
           <button
-            className={location.pathname === "/" ? "active" : ""}
-            aria-current={location.pathname === "/" ? "page" : undefined}
-            onClick={() => nav("/")}
+            className={location.pathname === "/overview" ? "active" : ""}
+            aria-current={
+              location.pathname === "/overview" ? "page" : undefined
+            }
+            onClick={() => nav("/overview")}
           >
             <LayoutDashboard />
             总览
@@ -326,17 +344,17 @@ function Shell({ version }: { version: string }) {
       </div>
       <section className="content">
         <Routes>
-          <Route path="/" element={<OverviewPage />} />
+          <Route path="/overview" element={<OverviewPage />} />
           <Route path="/details" element={<DetailsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" />} />
+          <Route path="*" element={<Navigate to="/overview" replace />} />
         </Routes>
       </section>
       <nav className="mobile-bottom-nav" aria-label="主导航">
         <button
-          className={location.pathname === "/" ? "active" : ""}
-          aria-current={location.pathname === "/" ? "page" : undefined}
-          onClick={() => nav("/")}
+          className={location.pathname === "/overview" ? "active" : ""}
+          aria-current={location.pathname === "/overview" ? "page" : undefined}
+          onClick={() => nav("/overview")}
         >
           <LayoutDashboard />
           <span>总览</span>

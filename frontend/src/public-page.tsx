@@ -116,7 +116,7 @@ export default function PublicPage({ version }: { version: string }) {
           >
             <Github />
           </a>
-          <Link className="public-login-button" to="/">
+          <Link className="public-login-button" to="/login">
             <LogIn />
             登录
           </Link>

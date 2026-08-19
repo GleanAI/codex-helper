@@ -45,7 +45,7 @@ const publicOverview = {
   ],
 };
 
-async function mockPublicPage(page: Page) {
+async function mockPublicPage(page: Page, authenticated = false) {
   await page.route("**/api/v1/**", (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     if (key === "system/status")
@@ -53,7 +53,9 @@ async function mockPublicPage(page: Page) {
         json: { initialized: true, appServer: true, version: "0.4.0" },
       });
     if (key === "auth/me")
-      return route.fulfill({ status: 401, json: { error: "未登录" } });
+      return authenticated
+        ? route.fulfill({ json: { username: "admin" } })
+        : route.fulfill({ status: 401, json: { error: "未登录" } });
     if (key === "public/overview")
       return route.fulfill({ json: publicOverview });
     return route.fulfill({ status: 404, json: { error: "接口不存在" } });
@@ -62,9 +64,9 @@ async function mockPublicPage(page: Page) {
 
 test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) => {
   await mockPublicPage(page);
-  await page.goto("/public");
+  await page.goto("/");
 
-  await expect(page).toHaveURL(/\/public$/);
+  await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("heading", { name: "Codex 用量状态" }),
   ).toBeVisible();
@@ -78,7 +80,7 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await expect(page.getByText("查看详情")).toHaveCount(0);
 
   const login = page.getByRole("link", { name: "登录" });
-  await expect(login).toHaveAttribute("href", "/");
+  await expect(login).toHaveAttribute("href", "/login");
   const github = page.locator(".public-icon-button");
   await expect(github).toHaveAttribute(
     "href",
@@ -116,11 +118,67 @@ test("公开页读取失败后允许手动重试", async ({ page }) => {
     }
     return route.fulfill({ status: 404, json: { error: "接口不存在" } });
   });
-  await page.goto("/public");
+  await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "暂时无法读取公开用量" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "重新加载" }).click();
   await expect(page.locator(".public-usage-card")).toBeVisible();
   expect(requests).toBe(2);
+});
+
+test("旧公开页路径跳转到根路径", async ({ page }) => {
+  await mockPublicPage(page);
+  await page.goto("/public");
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "Codex 用量状态" }),
+  ).toBeVisible();
+});
+
+test("已登录用户访问根路径仍然看到公开页", async ({ page }) => {
+  await mockPublicPage(page, true);
+  await page.goto("/");
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "Codex 用量状态" }),
+  ).toBeVisible();
+});
+
+test("后台路径使用独立登录入口并在登录后进入总览", async ({ page }) => {
+  await page.route("**/api/v1/**", (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "system/status")
+      return route.fulfill({
+        json: { initialized: true, appServer: true, version: "test" },
+      });
+    if (key === "auth/me")
+      return route.fulfill({ status: 401, json: { error: "未登录" } });
+    if (key === "auth/login") return route.fulfill({ json: { ok: true } });
+    if (key === "accounts") return route.fulfill({ json: [] });
+    if (key === "settings/general")
+      return route.fulfill({
+        json: {
+          timezone: "UTC",
+          theme: "system",
+          syncMinutes: 5,
+          retentionDays: 90,
+          beforeMinutes: 30,
+          notifyBefore: true,
+          notifyAfter: true,
+        },
+      });
+    return route.fulfill({ status: 404, json: { error: "接口不存在" } });
+  });
+
+  await page.goto("/overview");
+  await expect(page).toHaveURL(/\/login$/);
+  await page.getByLabel("用户名").fill("admin");
+  await page.getByLabel("密码").fill("test-password");
+  await page.getByRole("button", { name: "登录" }).click();
+
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(page.getByRole("heading", { name: "用量总览" })).toBeVisible();
 });
