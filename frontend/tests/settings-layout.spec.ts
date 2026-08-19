@@ -299,10 +299,14 @@ test("overview merges personal and Team connections for the same email", async (
 
   const geometry = await cards.first().evaluate((element) => ({
     cardWidth: element.getBoundingClientRect().width,
+    progressHeight: element
+      .querySelector(".overview-window .bar")
+      ?.getBoundingClientRect().height,
     viewportWidth: document.documentElement.clientWidth,
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.progressHeight).toBe(6);
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
 
   await merged
@@ -311,6 +315,118 @@ test("overview merges personal and Team connections for the same email", async (
     .click();
   await expect(page).toHaveURL(/\/details$/);
   await expect(page.locator(".account-select")).toHaveValue("2");
+});
+
+test("overview uses four compact columns on a wide desktop", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout only");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const accounts = Array.from({ length: 4 }, (_, index) => ({
+    ...responses.accounts[0],
+    id: index + 1,
+    displayName: `账号 ${index + 1}`,
+    email: `account${index + 1}@example.com`,
+  }));
+  await page.route("**/api/v1/**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const key = requestUrl.pathname.replace("/api/v1/", "");
+    if (key === "accounts") return route.fulfill({ json: accounts });
+    if (key === "dashboard") {
+      const accountId = Number(requestUrl.searchParams.get("accountId"));
+      return route.fulfill({
+        json: {
+          accountId,
+          displayName: `账号 ${accountId}`,
+          account: {
+            email: `account${accountId}@example.com`,
+            planType: "plus",
+            connected: true,
+          },
+          limits: [
+            {
+              limitId: "codex",
+              limitName: "Codex",
+              windowType: "primary",
+              usedPercent: 25,
+              windowDurationMinutes: 300,
+              resetsAt: Math.floor(Date.now() / 1000) + 18_000,
+            },
+          ],
+          monthlyCreditLimit: null,
+          summary: {},
+          usage: [],
+          fetchedAt: Math.floor(Date.now() / 1000),
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const cards = page.locator(".overview-card");
+  await expect(cards).toHaveCount(4);
+  await expect(
+    cards.first().locator(".overview-status-dot.healthy"),
+  ).toBeVisible();
+  const geometry = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, width: rect.width };
+    }),
+  );
+  expect(new Set(geometry.map(({ top }) => Math.round(top))).size).toBe(1);
+  expect(
+    Math.min(...geometry.map(({ width }) => width)),
+  ).toBeGreaterThanOrEqual(320);
+});
+
+test("overview does not report a connection as healthy before its dashboard loads", async ({
+  page,
+}) => {
+  let releaseDashboard = () => undefined;
+  const dashboardGate = new Promise<void>((resolve) => {
+    releaseDashboard = resolve;
+  });
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard") {
+      await dashboardGate;
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const connection = page.locator(".overview-connection");
+  await expect(connection.getByText("正在读取", { exact: true })).toBeVisible();
+  await expect(
+    connection.locator(".overview-status-dot.loading"),
+  ).toBeVisible();
+  await expect(connection.locator(".overview-status-dot.healthy")).toHaveCount(
+    0,
+  );
+  releaseDashboard();
+  await expect(connection.getByText("已连接", { exact: true })).toBeVisible();
+  await expect(
+    connection.locator(".overview-status-dot.healthy"),
+  ).toBeVisible();
 });
 
 test("overview keeps healthy connections visible when one dashboard fails", async ({
@@ -360,6 +476,13 @@ test("overview keeps healthy connections visible when one dashboard fails", asyn
       .getByText("暂无限额数据", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("账号不存在", { exact: true })).toBeVisible();
+  const healthy = page.locator(".overview-connection", { hasText: "默认账号" });
+  await expect(healthy.getByText("已连接", { exact: true })).toBeVisible();
+  await expect(healthy.locator(".overview-status-dot.healthy")).toBeVisible();
+  const failed = page.locator(".overview-connection", { hasText: "失效连接" });
+  await expect(failed.getByText("读取失败", { exact: true })).toBeVisible();
+  await expect(failed.locator(".overview-status-dot.failed")).toBeVisible();
+  await expect(failed.locator(".overview-status-dot.healthy")).toHaveCount(0);
   await expect(page.locator(".overview-card")).toHaveCount(2);
 });
 

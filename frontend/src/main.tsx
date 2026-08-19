@@ -455,14 +455,11 @@ function OverviewPage() {
         {groupAccounts(accounts).map((group) => (
           <section className="panel overview-card" key={group.key}>
             <div className="overview-card-header">
-              <div>
-                <small>账号</small>
-                <h2>
-                  {group.email
-                    ? maskEmail(group.email)
-                    : group.accounts[0].displayName}
-                </h2>
-              </div>
+              <h2>
+                {group.email
+                  ? maskEmail(group.email)
+                  : group.accounts[0].displayName}
+              </h2>
               {!group.email && <span className="badge">邮箱待识别</span>}
             </div>
             <div className="overview-connections">
@@ -539,13 +536,29 @@ function OverviewConnection({ account }: { account: Account }) {
     };
   }, [account.id]);
 
+  const dashboardFailed = Boolean(error || dashboard?.lastError);
   const status = !account.connected
     ? "未连接"
-    : account.actualKind === "unknown"
-      ? "套餐待识别"
-      : dashboard?.stale
-        ? "数据可能已过期"
-        : "已连接";
+    : dashboardFailed
+      ? "读取失败"
+      : !dashboard
+        ? "正在读取"
+        : account.actualKind === "unknown"
+          ? "套餐待识别"
+          : dashboard.stale
+            ? "数据可能已过期"
+            : "已连接";
+  const statusTone = !account.connected
+    ? "offline"
+    : dashboardFailed
+      ? "failed"
+      : !dashboard
+        ? "loading"
+        : account.actualKind === "unknown"
+          ? "pending"
+          : dashboard.stale
+            ? "stale"
+            : "healthy";
   const openDetails = () => {
     localStorage.setItem("accountId", String(account.id));
     navigate("/details");
@@ -554,9 +567,15 @@ function OverviewConnection({ account }: { account: Account }) {
   return (
     <article className="overview-connection">
       <div className="overview-connection-header">
-        <div>
-          <small>{accountKindLabel(account)}</small>
-          <h3>{account.displayName}</h3>
+        <div className="overview-connection-title">
+          <span
+            className={`overview-status-dot ${statusTone}`}
+            aria-hidden="true"
+          />
+          <div>
+            <h3>{account.displayName}</h3>
+            <small>{accountKindLabel(account)}</small>
+          </div>
         </div>
         <div className="overview-connection-actions">
           <span className="badge">{planLabel(account.planType)}</span>
@@ -566,7 +585,7 @@ function OverviewConnection({ account }: { account: Account }) {
         </div>
       </div>
       <div className="overview-status">
-        <span>{status}</span>
+        <span className={`overview-status-label ${statusTone}`}>{status}</span>
         <span>
           {dashboard?.fetchedAt
             ? `更新于 ${new Date(dashboard.fetchedAt * 1000).toLocaleString()}`
