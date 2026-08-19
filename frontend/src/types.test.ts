@@ -81,7 +81,7 @@ describe("API decoders", () => {
     const response = {
       cards: [
         {
-          title: "t**t@e*****e.com",
+          title: "t**t@e***e.com",
           emailIdentified: true,
           connections: [
             {

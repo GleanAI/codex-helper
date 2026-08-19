@@ -24,4 +24,4 @@ Codex OAuth 凭据由 app-server 写入各账号隔离的 `CODEX_HOME`，不经�
 
 JSON 解码限制为 1 MiB 并拒绝未知字段。统一安全头包括限制性 CSP、`nosniff`、禁止 iframe 和 same-origin referrer。前端路由、按钮禁用和邮箱掩码均不是服务端授权边界；所有新敏感端点必须在后端经过 `require`，改变 API 方法时还要核对来源头逻辑。
 
-`GET /api/v1/public/overview` 是用量信息的专用匿名例外。邮箱在服务端完成分组和掩码，响应只包含公开页面需要的连接名称、套餐、归一化状态、限额与更新时间；不得通过该端点返回账号 ID、完整邮箱、认证模式、原始上游错误、Token 摘要或历史。现有管理端账号和 Dashboard API 仍必须经过 `require`。
+`GET /api/v1/public/overview` 是用量信息的专用匿名例外。邮箱在服务端完成分组和掩码，每个需隐藏的邮箱片段最多使用三个星号；响应只包含公开页面需要的连接名称、套餐、归一化状态、限额与更新时间，不得通过该端点返回账号 ID、完整邮箱、认证模式、原始上游错误、Token 摘要或历史。现有管理端账号和 Dashboard API 仍必须经过 `require`。

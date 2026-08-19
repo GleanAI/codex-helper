@@ -10,7 +10,7 @@ const statusDetails: Record<
   loading: { label: "正在读取", description: "正在获取最新额度" },
   pending: { label: "套餐待识别", description: "用量数据仍可继续查看" },
   stale: { label: "数据可能已过期", description: "显示最近一次可用快照" },
-  healthy: { label: "运行正常", description: "用量数据已同步" },
+  healthy: { label: "运行正常", description: "数据已同步" },
 };
 
 export function UsageCard({

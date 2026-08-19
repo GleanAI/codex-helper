@@ -304,12 +304,14 @@ test("overview merges personal and Team connections for the same email", async (
 }, testInfo) => {
   if (testInfo.project.name === "desktop")
     await page.setViewportSize({ width: 1920, height: 929 });
+  const email = "verylongaccountidentifier@verylongdomain.example.com";
   const accounts = [
-    responses.accounts[0],
+    { ...responses.accounts[0], email },
     {
       ...responses.accounts[0],
       id: 2,
       displayName: "Team workspace",
+      email,
       planType: "business",
       expectedKind: "team",
       actualKind: "team",
@@ -376,7 +378,7 @@ test("overview merges personal and Team connections for the same email", async (
   await page.goto("/overview");
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(2);
-  const merged = cards.filter({ hasText: "t**t@e*****e.com" });
+  const merged = cards.filter({ hasText: "v***r@v***n.e***e.com" });
   await expect(merged).not.toHaveClass(/overview-card-wide/);
   await expect(merged.locator(".overview-connection")).toHaveCount(2);
   await expect(merged.getByText("个人订阅", { exact: true })).toBeVisible();
@@ -408,7 +410,7 @@ test("overview merges personal and Team connections for the same email", async (
       .locator(".usage-card-header > div > span"),
   ).toHaveText("连接");
   await expect(page.getByRole("button", { name: "立即刷新" })).toHaveCount(0);
-  await expect(page.locator("body")).not.toContainText("test@example.com");
+  await expect(page.locator("body")).not.toContainText(email);
 
   const geometry = await merged.evaluate((element) => {
     const title = element.querySelector(".usage-card-header h2");
@@ -661,7 +663,7 @@ test("overview mounts each complete card only after its dashboard loads", async 
 
   releaseFirst();
   const firstCard = page.locator(".overview-card", {
-    hasText: "t**t@e*****e.com",
+    hasText: "t**t@e***e.com",
   });
   await expect(firstCard).toBeVisible();
   await expect(firstCard.locator(".usage-status-healthy")).toBeVisible();
@@ -723,12 +725,16 @@ test("overview keeps healthy connections visible when one dashboard fails", asyn
   await page.goto("/overview");
   await expect(
     page
-      .locator(".overview-card", { hasText: "t**t@e*****e.com" })
+      .locator(".overview-card", { hasText: "t**t@e***e.com" })
       .getByText("暂无限额数据", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("账号不存在", { exact: true })).toBeVisible();
   const healthy = page.locator(".overview-connection", { hasText: "默认账号" });
   await expect(healthy.getByText("运行正常", { exact: true })).toBeVisible();
+  await expect(healthy.getByText("数据已同步", { exact: true })).toBeVisible();
+  await expect(
+    healthy.getByText("用量数据已同步", { exact: true }),
+  ).toHaveCount(0);
   await expect(healthy.locator(".usage-status-healthy")).toBeVisible();
   const failed = page.locator(".overview-connection", { hasText: "失效连接" });
   await expect(failed.getByText("读取失败", { exact: true })).toBeVisible();
@@ -1439,9 +1445,7 @@ test("Codex account emails are masked everywhere they are displayed", async ({
   });
 
   await page.goto("/details");
-  await expect(page.locator(".account-select")).toContainText(
-    "t**t@e*****e.com",
-  );
+  await expect(page.locator(".account-select")).toContainText("t**t@e***e.com");
   await expect(page.getByText("已使用 25%", { exact: true })).toHaveCount(0);
   await expect(page.getByText("剩余 75%", { exact: true })).toHaveCount(0);
   await expect(page.locator(".bar")).toHaveAttribute(
@@ -1453,7 +1457,7 @@ test("Codex account emails are masked everywhere they are displayed", async ({
   await page.goto("/settings");
   await page.getByRole("tab", { name: "Codex" }).click();
   await expect(page.locator(".account-meta").first()).toContainText(
-    "t**t@e*****e.com",
+    "t**t@e***e.com",
   );
   await expect(page.locator("body")).not.toContainText("test@example.com");
 });

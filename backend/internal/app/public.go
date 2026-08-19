@@ -181,5 +181,5 @@ func maskEmailPart(part string) string {
 	if length == 2 {
 		return string(runes[0]) + "*"
 	}
-	return string(runes[0]) + strings.Repeat("*", length-2) + string(runes[length-1])
+	return string(runes[0]) + strings.Repeat("*", min(length-2, 3)) + string(runes[length-1])
 }

@@ -1174,6 +1174,9 @@ a {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--track) 28%, transparent);
 }
+.usage-card-header > div {
+  min-width: 0;
+}
 .usage-card-header span {
   color: var(--muted);
   font-size: 10px;
@@ -1182,11 +1185,14 @@ a {
   text-transform: uppercase;
 }
 .usage-card-header h2 {
+  min-width: 0;
   margin: 3px 0 0;
   font-size: 16px;
   line-height: 1.25;
   letter-spacing: -0.025em;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .usage-card-header > small {
   flex: none;

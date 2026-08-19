@@ -10,6 +10,22 @@ import (
 	"codex-helper/internal/store"
 )
 
+func TestMaskEmailBoundsHiddenParts(t *testing.T) {
+	tests := map[string]string{
+		"Test@Example.com":                      "T**t@E***e.com",
+		"verylongaccountidentifier@example.com": "v***r@e***e.com",
+		"name@verylongdomain.example.com":       "n**e@v***n.e***e.com",
+		"a@b.co":                                "*@*.co",
+		"invalid-address-without-at":            "i***t",
+		"名字很长的账号@非常长的域名.example.com":            "名***号@非***名.e***e.com",
+	}
+	for email, want := range tests {
+		if got := maskEmail(email); got != want {
+			t.Errorf("maskEmail(%q) = %q, want %q", email, got, want)
+		}
+	}
+}
+
 func TestPublicOverviewIsAnonymousGroupedAndSanitized(t *testing.T) {
 	a := newReminderTestApp(t)
 	if err := a.store.Set("initialized", "true"); err != nil {
@@ -52,7 +68,7 @@ func TestPublicOverviewIsAnonymousGroupedAndSanitized(t *testing.T) {
 	if err = json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Cards) != 1 || body.Cards[0].Title != "T**t@E*****e.com" || len(body.Cards[0].Connections) != 2 {
+	if len(body.Cards) != 1 || body.Cards[0].Title != "T**t@E***e.com" || len(body.Cards[0].Connections) != 2 {
 		t.Fatalf("unexpected grouping: %#v", body)
 	}
 	if body.Cards[0].Connections[0].Status != "healthy" || body.Cards[0].Connections[1].Status != "failed" {

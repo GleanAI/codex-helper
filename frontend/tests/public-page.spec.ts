@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 const publicOverview = {
   cards: [
     {
-      title: "t**t@e*****e.com",
+      title: "t**t@e***e.com",
       emailIdentified: true,
       connections: [
         {
@@ -81,8 +81,12 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await expect(page.locator(".public-usage-card")).toHaveCount(1);
   await expect(page.locator(".public-connection")).toHaveCount(2);
   await expect(page.locator(".usage-limit")).toHaveCount(3);
-  await expect(page.getByText("t**t@e*****e.com")).toBeVisible();
+  await expect(page.getByText("t**t@e***e.com")).toBeVisible();
   await expect(page.getByText("运行正常", { exact: true })).toBeVisible();
+  await expect(page.getByText("数据已同步", { exact: true })).toBeVisible();
+  await expect(page.getByText("用量数据已同步", { exact: true })).toHaveCount(
+    0,
+  );
   await expect(page.getByText("数据可能已过期", { exact: true })).toBeVisible();
   await expect(page.getByText("test@example.com")).toHaveCount(0);
   await expect(page.getByText("查看详情")).toHaveCount(0);
@@ -177,7 +181,7 @@ test("公开页在宽屏中紧凑显示四张完整卡片", async ({ page }, tes
   const overview = {
     cards: Array.from({ length: 4 }, (_, index) => ({
       ...publicOverview.cards[0],
-      title: `a***${index + 1}@e*****e.com`,
+      title: `a***${index + 1}@e***e.com`,
     })),
   };
   await mockPublicPage(page, false, overview);
@@ -212,7 +216,7 @@ test("公开页适配不同桌面宽度的卡片列数", async ({ page }, testIn
   const overview = {
     cards: Array.from({ length: 4 }, (_, index) => ({
       ...publicOverview.cards[0],
-      title: `a***${index + 1}@e*****e.com`,
+      title: `a***${index + 1}@e***e.com`,
     })),
   };
   await mockPublicPage(page, false, overview);
@@ -350,7 +354,7 @@ test("公开页在移动浏览器使用无横向溢出的完整单列卡片", as
   const overview = {
     cards: [
       publicOverview.cards[0],
-      { ...publicOverview.cards[0], title: "s**d@e*****e.com" },
+      { ...publicOverview.cards[0], title: "s**d@e***e.com" },
     ],
   };
   await mockPublicPage(page, false, overview);

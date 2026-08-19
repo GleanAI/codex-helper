@@ -1993,9 +1993,14 @@ const limitWindowLabel = (limit: Limit) => {
   return limit.limitName ? `${limit.limitName} · ${window}` : window;
 };
 const maskEmailPart = (part: string) => {
-  if (part.length <= 1) return "*";
-  if (part.length === 2) return part[0] + "*";
-  return part[0] + "*".repeat(part.length - 2) + part.at(-1);
+  const characters = Array.from(part);
+  if (characters.length <= 1) return "*";
+  if (characters.length === 2) return characters[0] + "*";
+  return (
+    characters[0] +
+    "*".repeat(Math.min(characters.length - 2, 3)) +
+    characters.at(-1)
+  );
 };
 const maskEmail = (email: string) => {
   const at = email.lastIndexOf("@");
