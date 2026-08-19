@@ -45,7 +45,11 @@ const publicOverview = {
   ],
 };
 
-async function mockPublicPage(page: Page, authenticated = false) {
+async function mockPublicPage(
+  page: Page,
+  authenticated = false,
+  overview = publicOverview,
+) {
   await page.route("**/api/v1/**", (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     if (key === "system/status")
@@ -56,8 +60,7 @@ async function mockPublicPage(page: Page, authenticated = false) {
       return authenticated
         ? route.fulfill({ json: { username: "admin" } })
         : route.fulfill({ status: 401, json: { error: "未登录" } });
-    if (key === "public/overview")
-      return route.fulfill({ json: publicOverview });
+    if (key === "public/overview") return route.fulfill({ json: overview });
     return route.fulfill({ status: 404, json: { error: "接口不存在" } });
   });
 }
@@ -67,9 +70,14 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await page.goto("/");
 
   await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByText("PUBLIC USAGE STATUS")).toHaveCount(0);
+  await expect(page.getByText("Codex 用量状态", { exact: true })).toHaveCount(
+    0,
+  );
   await expect(
-    page.getByRole("heading", { name: "Codex 用量状态" }),
-  ).toBeVisible();
+    page.getByText("无需登录，快速查看各个 Codex 连接的额度与重置时间。"),
+  ).toHaveCount(0);
+  await expect(page.getByText("最近更新", { exact: true })).toHaveCount(0);
   await expect(page.locator(".public-usage-card")).toHaveCount(1);
   await expect(page.locator(".public-connection")).toHaveCount(2);
   await expect(page.locator(".public-limit")).toHaveCount(3);
@@ -132,9 +140,7 @@ test("旧公开页路径跳转到根路径", async ({ page }) => {
   await page.goto("/public");
 
   await expect(page).toHaveURL(/\/$/);
-  await expect(
-    page.getByRole("heading", { name: "Codex 用量状态" }),
-  ).toBeVisible();
+  await expect(page.locator(".public-usage-card")).toBeVisible();
 });
 
 test("已登录用户访问根路径仍然看到公开页", async ({ page }) => {
@@ -142,9 +148,85 @@ test("已登录用户访问根路径仍然看到公开页", async ({ page }) => 
   await page.goto("/");
 
   await expect(page).toHaveURL(/\/$/);
-  await expect(
-    page.getByRole("heading", { name: "Codex 用量状态" }),
-  ).toBeVisible();
+  await expect(page.locator(".public-usage-card")).toBeVisible();
+});
+
+test("公开页在 1920×1080 中紧凑显示四张完整卡片", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout only");
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const overview = {
+    cards: Array.from({ length: 4 }, (_, index) => ({
+      ...publicOverview.cards[0],
+      title: `a***${index + 1}@e*****e.com`,
+    })),
+  };
+  await mockPublicPage(page, false, overview);
+  await page.goto("/");
+
+  const cards = page.locator(".public-usage-card");
+  await expect(cards).toHaveCount(4);
+  await expect(cards.last().locator(".public-limit")).toHaveCount(3);
+  const geometry = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, width: rect.width };
+    }),
+  );
+  expect(new Set(geometry.map(({ top }) => Math.round(top))).size).toBe(1);
+  expect(
+    Math.min(...geometry.map(({ width }) => width)),
+  ).toBeGreaterThanOrEqual(340);
+  expect(Math.max(...geometry.map(({ width }) => width))).toBeLessThan(400);
+  const viewport = await page.evaluate(() => ({
+    documentHeight: document.documentElement.scrollHeight,
+    documentWidth: document.documentElement.scrollWidth,
+    viewportHeight: window.innerHeight,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(viewport.documentHeight).toBeLessThanOrEqual(viewport.viewportHeight);
+  expect(viewport.documentWidth).toBeLessThanOrEqual(viewport.viewportWidth);
+});
+
+test("公开页在移动浏览器使用无横向溢出的完整单列卡片", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile layout only");
+  const overview = {
+    cards: [
+      publicOverview.cards[0],
+      { ...publicOverview.cards[0], title: "s**d@e*****e.com" },
+    ],
+  };
+  await mockPublicPage(page, false, overview);
+  await page.goto("/");
+
+  const cards = page.locator(".public-usage-card");
+  await expect(cards).toHaveCount(2);
+  const geometry = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width };
+    }),
+  );
+  expect(Math.round(geometry[0].left)).toBe(Math.round(geometry[1].left));
+  expect(geometry[1].top).toBeGreaterThan(geometry[0].top);
+  const pageGeometry = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(pageGeometry.documentWidth).toBeLessThanOrEqual(
+    pageGeometry.viewportWidth,
+  );
+  for (const control of [
+    page.locator(".public-icon-button"),
+    page.locator(".public-login-button"),
+  ]) {
+    const box = await control.boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+  }
 });
 
 test("后台路径使用独立登录入口并在登录后进入总览", async ({ page }) => {

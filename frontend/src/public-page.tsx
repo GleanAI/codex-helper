@@ -1,5 +1,5 @@
 import { Github, LogIn, Zap } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { getEventually, toErrorMessage } from "./api";
 import {
@@ -85,16 +85,6 @@ export default function PublicPage({ version }: { version: string }) {
     };
   }, [retry]);
 
-  const latestUpdate = useMemo(() => {
-    if (!overview) return 0;
-    return Math.max(
-      0,
-      ...overview.cards.flatMap((card) =>
-        card.connections.map((connection) => connection.fetchedAt),
-      ),
-    );
-  }, [overview]);
-
   return (
     <div className="public-page">
       <header className="public-header">
@@ -124,25 +114,6 @@ export default function PublicPage({ version }: { version: string }) {
       </header>
 
       <main className="public-main">
-        <section className="public-hero">
-          <div>
-            <span className="public-eyebrow">
-              <i aria-hidden="true" /> PUBLIC USAGE STATUS
-            </span>
-            <h1>Codex 用量状态</h1>
-            <p>无需登录，快速查看各个 Codex 连接的额度与重置时间。</p>
-          </div>
-          <div className="public-freshness" aria-live="polite">
-            <span>最近更新</span>
-            <strong>
-              {latestUpdate
-                ? new Date(latestUpdate * 1000).toLocaleString()
-                : "等待首次同步"}
-            </strong>
-            <small>页面每 30 秒自动刷新</small>
-          </div>
-        </section>
-
         {error && overview && <div className="public-banner">{error}</div>}
         {!overview ? (
           error ? (
