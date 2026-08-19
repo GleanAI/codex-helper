@@ -350,6 +350,11 @@ header p {
   gap: 14px;
   align-items: start;
 }
+.overview-card,
+.overview-card-placeholder {
+  width: 100%;
+  max-width: 360px;
+}
 .overview-card-placeholder {
   min-height: 220px;
   display: grid;
@@ -364,6 +369,19 @@ header p {
   font-size: 12px;
 }
 @media (min-width: 801px) {
+  .overview-connection .usage-limit {
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 9px;
+    padding: 6px 8px;
+  }
+  .overview-connection .usage-limit-gauge {
+    width: 52px;
+    height: 52px;
+    padding: 4px;
+  }
+  .overview-connection .usage-limit-gauge strong {
+    font-size: 17px;
+  }
   .overview-connection .usage-limits {
     grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
   }
@@ -389,11 +407,6 @@ header p {
     > .usage-limit-monthly {
     grid-column: 2;
     grid-row: 2;
-  }
-}
-@media (min-width: 900px) {
-  .overview-card-wide {
-    grid-column: span 2;
   }
 }
 .balance {
@@ -865,6 +878,10 @@ a {
   .overview-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
+  }
+  .overview-card,
+  .overview-card-placeholder {
+    max-width: none;
   }
   .overview-connection .usage-connection-actions button {
     min-height: 44px;

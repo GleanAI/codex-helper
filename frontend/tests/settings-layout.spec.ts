@@ -377,7 +377,7 @@ test("overview merges personal and Team connections for the same email", async (
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(2);
   const merged = cards.filter({ hasText: "t**t@e*****e.com" });
-  await expect(merged).toHaveClass(/overview-card-wide/);
+  await expect(merged).not.toHaveClass(/overview-card-wide/);
   await expect(merged.locator(".overview-connection")).toHaveCount(2);
   await expect(merged.getByText("个人订阅", { exact: true })).toBeVisible();
   await expect(
@@ -458,7 +458,9 @@ test("overview merges personal and Team connections for the same email", async (
     };
   });
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
-  expect(geometry.gaugeSize).toBe(60);
+  expect(geometry.gaugeSize).toBe(
+    testInfo.project.name === "desktop" ? 52 : 60,
+  );
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   if (testInfo.project.name === "desktop") {
     const cardTops = await cards.evaluateAll((elements) =>
@@ -466,7 +468,8 @@ test("overview merges personal and Team connections for the same email", async (
         Math.round(element.getBoundingClientRect().top),
       ),
     );
-    expect(geometry.cardWidth).toBeGreaterThanOrEqual(600);
+    expect(geometry.cardWidth).toBeGreaterThanOrEqual(280);
+    expect(geometry.cardWidth).toBeLessThanOrEqual(360);
     expect(new Set(cardTops).size).toBe(1);
     expect(geometry.titleLines).toBe(1);
     expect(geometry.shortTop).toBe(geometry.sevenDayTop);
@@ -555,6 +558,9 @@ test("overview uses adaptive account columns across desktop sizes", async ({
   expect(
     Math.min(...compactGeometry.map(({ width }) => width)),
   ).toBeGreaterThanOrEqual(280);
+  expect(
+    Math.max(...compactGeometry.map(({ width }) => width)),
+  ).toBeLessThanOrEqual(360);
 
   await page.setViewportSize({ width: 1280, height: 800 });
   const regularGeometry = await cards.evaluateAll((elements) =>
@@ -572,6 +578,9 @@ test("overview uses adaptive account columns across desktop sizes", async ({
   expect(
     Math.min(...regularGeometry.map(({ width }) => width)),
   ).toBeGreaterThanOrEqual(280);
+  expect(
+    Math.max(...regularGeometry.map(({ width }) => width)),
+  ).toBeLessThanOrEqual(360);
 
   await page.setViewportSize({ width: 1920, height: 1080 });
   const wideGeometry = await cards.evaluateAll((elements) =>
@@ -584,6 +593,9 @@ test("overview uses adaptive account columns across desktop sizes", async ({
   expect(
     Math.min(...wideGeometry.map(({ width }) => width)),
   ).toBeGreaterThanOrEqual(280);
+  expect(
+    Math.max(...wideGeometry.map(({ width }) => width)),
+  ).toBeLessThanOrEqual(360);
 });
 
 test("overview mounts each complete card only after its dashboard loads", async ({

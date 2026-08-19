@@ -515,7 +515,6 @@ function OverviewGroupCard({ group }: { group: AccountGroup }) {
     },
     [],
   );
-  const wide = group.accounts.length > 1;
   const ready = group.accounts.every(
     (account) => connections[account.id]?.settled,
   );
@@ -531,9 +530,7 @@ function OverviewGroupCard({ group }: { group: AccountGroup }) {
       ))}
       {ready ? (
         <UsageCard
-          className={
-            wide ? "overview-card overview-card-wide" : "overview-card"
-          }
+          className="overview-card"
           title={
             group.email ? maskEmail(group.email) : group.accounts[0].displayName
           }
@@ -552,7 +549,7 @@ function OverviewGroupCard({ group }: { group: AccountGroup }) {
       ) : (
         <div
           aria-busy="true"
-          className={`overview-card-placeholder${wide ? " overview-card-wide" : ""}`}
+          className="overview-card-placeholder"
           role="status"
         >
           <div className="spinner" />
