@@ -7,3 +7,5 @@ backend/internal/web/dist/*
 .env
 *.tsbuildinfo
 /data/
+*.png
+*.jpg
