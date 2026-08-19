@@ -501,6 +501,7 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 		By         map[string]rawLimit `json:"rateLimitsByLimitId"`
 	}
 	if e := rt.client.Call(ctx, "account/rateLimits/read", map[string]any{}, &lr); e == nil {
+		d.MonthlyCreditLimit = monthlyCreditLimitFrom(lr.RateLimits, lr.By)
 		if len(lr.By) > 0 {
 			for _, x := range lr.By {
 				d.Limits = append(d.Limits, flattenLimit(x)...)
@@ -604,11 +605,19 @@ func (a *App) storeLimitSnapshots(d Dashboard) (bool, error) {
 }
 
 type rawLimit struct {
-	LimitID   string          `json:"limitId"`
-	LimitName *string         `json:"limitName"`
-	PlanType  *string         `json:"planType"`
-	Primary   *rawLimitWindow `json:"primary"`
-	Secondary *rawLimitWindow `json:"secondary"`
+	LimitID         string                 `json:"limitId"`
+	LimitName       *string                `json:"limitName"`
+	PlanType        *string                `json:"planType"`
+	Primary         *rawLimitWindow        `json:"primary"`
+	Secondary       *rawLimitWindow        `json:"secondary"`
+	IndividualLimit *rawMonthlyCreditLimit `json:"individualLimit"`
+}
+
+type rawMonthlyCreditLimit struct {
+	RemainingPercent float64 `json:"remainingPercent"`
+	ResetsAt         int64   `json:"resetsAt"`
+	Used             string  `json:"used"`
+	Limit            string  `json:"limit"`
 }
 
 type rawLimitWindow struct {
@@ -644,6 +653,27 @@ func flattenLimitWindow(limit rawLimit, windowType string, window *rawLimitWindo
 		WindowDurationMinutes: duration,
 		ResetsAt:              resetsAt,
 		PlanType:              limit.PlanType,
+	}
+}
+
+func monthlyCreditLimitFrom(rateLimits *rawLimit, by map[string]rawLimit) *MonthlyCreditLimit {
+	individual := (*rawMonthlyCreditLimit)(nil)
+	if rateLimits != nil {
+		individual = rateLimits.IndividualLimit
+	}
+	if individual == nil {
+		if canonical, ok := by["codex"]; ok {
+			individual = canonical.IndividualLimit
+		}
+	}
+	if individual == nil {
+		return nil
+	}
+	return &MonthlyCreditLimit{
+		RemainingPercent: individual.RemainingPercent,
+		ResetsAt:         individual.ResetsAt,
+		Used:             individual.Used,
+		Limit:            individual.Limit,
 	}
 }
 

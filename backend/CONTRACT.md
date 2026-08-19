@@ -31,13 +31,14 @@
  account:{email:string|null, authMode:string|null, planType:string|null, connected:bool},
  limits:[{limitId, limitName:string|null, windowType,
           usedPercent, windowDurationMinutes, resetsAt, planType:string|null}],
+ monthlyCreditLimit:{remainingPercent,resetsAt,used:string,limit:string}|null,
  summary:{lifetimeTokens?, peakDailyTokens?, longestRunningTurnSec?,
           currentStreakDays?, longestStreakDays?, callCount?, inputTokens?, outputTokens?},
  usage:[{date,totalTokens,callCount?,inputTokens?,outputTokens?}],
  fetchedAt, stale, lastError?}
 ```
 
-时间字段为 Unix 秒。`limits[].windowType` 是 app-server 中 `primary` 或 `secondary` 窗口的位置标识，不代表固定周期；实际周期由 `windowDurationMinutes` 表示，上游未提供时为 `0`。app-server 未提供的摘要字段可以是 `null`；列表应返回数组而非 `null`。
+时间字段为 Unix 秒。`limits[].windowType` 是 app-server 中 `primary` 或 `secondary` 窗口的位置标识，不代表固定周期；实际周期由 `windowDurationMinutes` 表示，上游未提供时为 `0`。`monthlyCreditLimit` 来自 app-server 可选的 `individualLimit`，`remainingPercent` 直接采用上游值，`used` 和 `limit` 保留上游字符串精度；未提供时为 `null`。app-server 未提供的摘要字段可以是 `null`；列表应返回数组而非 `null`。
 
 ## 3. 系统、初始化与会话
 

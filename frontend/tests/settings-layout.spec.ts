@@ -250,6 +250,15 @@ test("overview merges personal and Team connections for the same email", async (
             windowDurationMinutes: index ? 43_200 : 10_080,
             resetsAt: Math.floor(Date.now() / 1000) + 604_800,
           })),
+          monthlyCreditLimit:
+            accountId === 2
+              ? {
+                  remainingPercent: 100,
+                  resetsAt: Math.floor(Date.now() / 1000) + 1_036_800,
+                  used: "0",
+                  limit: "25000",
+                }
+              : null,
           summary: {},
           usage: [],
           fetchedAt: Math.floor(Date.now() / 1000),
@@ -269,8 +278,20 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(
     merged.getByText("Team / Business 工作区", { exact: true }),
   ).toBeVisible();
-  await expect(merged.locator(".overview-window")).toHaveCount(3);
+  await expect(merged.locator(".overview-window")).toHaveCount(4);
   await expect(merged.getByText("75% 剩余", { exact: true })).toBeVisible();
+  const teamConnection = merged.locator(".overview-connection", {
+    hasText: "Team workspace",
+  });
+  await expect(
+    teamConnection.getByText("月度额度", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    teamConnection.getByText("100% 剩余", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    teamConnection.locator('.bar[aria-label="月度额度：已使用 0%，剩余 100%"]'),
+  ).toBeVisible();
   await expect(merged.getByText("下次重置").first()).toBeVisible();
   await expect(page.getByText("邮箱待识别", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "立即刷新" })).toHaveCount(0);
@@ -860,7 +881,7 @@ test("Codex account cards fit within the viewport", async ({ page }) => {
   expect(overflow.cardWidth).toBeLessThanOrEqual(overflow.contentWidth);
 });
 
-test("groups account metadata and multiple windows in one balance panel", async ({
+test("shows regular and monthly limits in one balance panel", async ({
   page,
 }) => {
   await page.route("**/api/v1/**", async (route) => {
@@ -872,7 +893,7 @@ test("groups account metadata and multiple windows in one balance panel", async 
           displayName: "默认账号",
           account: {
             email: "test@example.com",
-            planType: "plus",
+            planType: "business",
             connected: true,
           },
           limits: [
@@ -901,6 +922,12 @@ test("groups account metadata and multiple windows in one balance panel", async 
               resetsAt: 0,
             },
           ],
+          monthlyCreditLimit: {
+            remainingPercent: 68,
+            resetsAt: 1_788_235_200,
+            used: "8000",
+            limit: "25000",
+          },
           summary: {},
           usage: [],
           fetchedAt: 1_786_665_609,
@@ -913,16 +940,20 @@ test("groups account metadata and multiple windows in one balance panel", async 
   await page.goto("/details");
   const balance = page.locator(".balance");
   await expect(page.getByText("Codex Account", { exact: true })).toHaveCount(0);
-  await expect(balance.locator(".badge")).toHaveText("Plus");
+  await expect(balance.locator(".badge")).toHaveText("Business");
   await expect(balance.locator(".badge")).toHaveCount(1);
   await expect(balance.locator(".balance-updated")).toContainText("更新于");
   await expect(balance.locator(".balance-updated")).not.toContainText(
     "尚未同步",
   );
-  await expect(balance.locator(".limit-window")).toHaveCount(3);
+  await expect(balance.locator(".limit-window")).toHaveCount(4);
   await expect(balance.getByText("Codex · 5 小时窗口")).toBeVisible();
   await expect(balance.getByText("Codex · 7 天窗口")).toBeVisible();
   await expect(balance.getByText("限额窗口", { exact: true })).toBeVisible();
+  await expect(balance.getByText("月度额度", { exact: true })).toBeVisible();
+  await expect(
+    balance.getByText("已用 8,000 / 总额 25,000 credits", { exact: true }),
+  ).toBeVisible();
   const bars = balance.locator(".bar");
   await expect(bars.nth(0)).toHaveAttribute(
     "aria-label",
@@ -935,6 +966,10 @@ test("groups account metadata and multiple windows in one balance panel", async 
   await expect(bars.nth(2)).toHaveAttribute(
     "aria-label",
     "限额窗口：已使用 10%，剩余 90%",
+  );
+  await expect(bars.nth(3)).toHaveAttribute(
+    "aria-label",
+    "月度额度：已使用 32%，剩余 68%",
   );
   await expect(balance.locator('[aria-label*="primary"]')).toHaveCount(0);
   await expect(balance.locator('[aria-label*="secondary"]')).toHaveCount(0);

@@ -47,6 +47,12 @@ export interface Limit {
   windowDurationMinutes: number;
   resetsAt: number;
 }
+export interface MonthlyCreditLimit {
+  remainingPercent: number;
+  resetsAt: number;
+  used: string;
+  limit: string;
+}
 export interface Point {
   date: string;
   totalTokens: number;
@@ -60,6 +66,7 @@ export interface Dashboard {
     connected: boolean;
   };
   limits: Limit[];
+  monthlyCreditLimit: MonthlyCreditLimit | null;
   summary: {
     lifetimeTokens?: number | null;
     peakDailyTokens?: number | null;
@@ -159,7 +166,11 @@ export const decodeAccounts: Decoder<Account[]> = (value) => {
 export const decodeDashboard: Decoder<Dashboard> = (value) => {
   const x = record(value, "Dashboard"),
     account = record(x.account, "account"),
-    summary = record(x.summary, "summary");
+    summary = record(x.summary, "summary"),
+    monthlyCreditLimit =
+      x.monthlyCreditLimit == null
+        ? null
+        : record(x.monthlyCreditLimit, "monthlyCreditLimit");
   if (!Array.isArray(x.limits) || !Array.isArray(x.usage))
     throw new Error("Dashboard列表格式无效");
   return {
@@ -184,6 +195,17 @@ export const decodeDashboard: Decoder<Dashboard> = (value) => {
         resetsAt: number(l.resetsAt, "resetsAt"),
       };
     }),
+    monthlyCreditLimit: monthlyCreditLimit
+      ? {
+          remainingPercent: number(
+            monthlyCreditLimit.remainingPercent,
+            "remainingPercent",
+          ),
+          resetsAt: number(monthlyCreditLimit.resetsAt, "resetsAt"),
+          used: string(monthlyCreditLimit.used, "used"),
+          limit: string(monthlyCreditLimit.limit, "limit"),
+        }
+      : null,
     summary: {
       lifetimeTokens: optionalNumber(summary.lifetimeTokens, "lifetimeTokens"),
       peakDailyTokens: optionalNumber(

@@ -43,6 +43,7 @@ import {
   type DeviceLogin,
   type GeneralSettings,
   type Limit,
+  type MonthlyCreditLimit,
   type SMTPSettingsForm,
   type TelegramSettingsForm,
 } from "./types";
@@ -577,14 +578,24 @@ function OverviewConnection({ account }: { account: Account }) {
       )}
       {!dashboard && !error ? (
         <div className="overview-empty">正在读取限额…</div>
-      ) : dashboard?.limits.length ? (
+      ) : dashboard?.limits.length || dashboard?.monthlyCreditLimit ? (
         <div className="overview-windows">
           {dashboard.limits.map((limit) => (
             <OverviewLimitWindow
               key={`${limit.limitId}:${limit.windowType}`}
-              limit={limit}
+              label={limitWindowLabel(limit)}
+              usedPercent={limit.usedPercent}
+              resetsAt={limit.resetsAt}
             />
           ))}
+          {dashboard.monthlyCreditLimit && (
+            <OverviewLimitWindow
+              key="monthly-credit-limit"
+              label="月度额度"
+              usedPercent={100 - dashboard.monthlyCreditLimit.remainingPercent}
+              resetsAt={dashboard.monthlyCreditLimit.resetsAt}
+            />
+          )}
         </div>
       ) : (
         <div className="overview-empty">
@@ -595,22 +606,29 @@ function OverviewConnection({ account }: { account: Account }) {
   );
 }
 
-function OverviewLimitWindow({ limit }: { limit: Limit }) {
-  const used = Math.min(100, Math.max(0, limit.usedPercent));
+function OverviewLimitWindow({
+  label,
+  usedPercent,
+  resetsAt,
+}: {
+  label: string;
+  usedPercent: number;
+  resetsAt: number;
+}) {
+  const used = Math.min(100, Math.max(0, usedPercent));
   const left = 100 - used;
   const usedLabel = Math.round(used);
   const leftLabel = Math.round(left);
   const leftColor = `hsl(${left * 1.2} 70% 45%)`;
-  const windowLabel = limitWindowLabel(limit);
   return (
     <div className="overview-window">
       <div className="overview-window-top">
-        <small>{windowLabel}</small>
+        <small>{label}</small>
         <strong style={{ color: leftColor }}>{leftLabel}% 剩余</strong>
       </div>
       <div
         className="bar"
-        aria-label={`${windowLabel}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
+        aria-label={`${label}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
       >
         <em style={{ width: left + "%", background: leftColor }} />
         <i style={{ width: used + "%" }} />
@@ -618,11 +636,9 @@ function OverviewLimitWindow({ limit }: { limit: Limit }) {
       <div className="overview-reset">
         <span>下次重置</span>
         <b>
-          {limit.resetsAt
-            ? new Date(limit.resetsAt * 1000).toLocaleString()
-            : "暂未提供"}
+          {resetsAt ? new Date(resetsAt * 1000).toLocaleString() : "暂未提供"}
         </b>
-        <span>{limit.resetsAt ? relative(limit.resetsAt) : ""}</span>
+        <span>{resetsAt ? relative(resetsAt) : ""}</span>
       </div>
     </div>
   );
@@ -810,6 +826,7 @@ function DetailsPage() {
       {e && <div className="banner">{e}</div>}
       <BalancePanel
         limits={d.limits}
+        monthlyCreditLimit={d.monthlyCreditLimit}
         planType={d.account.planType}
         fetchedAt={d.fetchedAt}
       />
@@ -830,10 +847,12 @@ function DetailsPage() {
 }
 function BalancePanel({
   limits,
+  monthlyCreditLimit,
   planType,
   fetchedAt,
 }: {
   limits: Limit[];
+  monthlyCreditLimit: MonthlyCreditLimit | null;
   planType: string | null;
   fetchedAt: number;
 }) {
@@ -851,11 +870,25 @@ function BalancePanel({
           </span>
         </div>
       </div>
-      {limits.length ? (
+      {limits.length || monthlyCreditLimit ? (
         <div className="balance-windows">
           {limits.map((x) => (
-            <LimitWindow key={`${x.limitId}:${x.windowType}`} x={x} />
+            <LimitWindow
+              key={`${x.limitId}:${x.windowType}`}
+              label={limitWindowLabel(x)}
+              usedPercent={x.usedPercent}
+              resetsAt={x.resetsAt}
+            />
           ))}
+          {monthlyCreditLimit && (
+            <LimitWindow
+              key="monthly-credit-limit"
+              label="月度额度"
+              usedPercent={100 - monthlyCreditLimit.remainingPercent}
+              resetsAt={monthlyCreditLimit.resetsAt}
+              details={`已用 ${creditAmount(monthlyCreditLimit.used)} / 总额 ${creditAmount(monthlyCreditLimit.limit)} credits`}
+            />
+          )}
         </div>
       ) : (
         <div className="balance-empty">
@@ -865,16 +898,25 @@ function BalancePanel({
     </section>
   );
 }
-function LimitWindow({ x }: { x: Limit }) {
-  const used = Math.min(100, Math.max(0, x.usedPercent)),
+function LimitWindow({
+  label,
+  usedPercent,
+  resetsAt,
+  details,
+}: {
+  label: string;
+  usedPercent: number;
+  resetsAt: number;
+  details?: string;
+}) {
+  const used = Math.min(100, Math.max(0, usedPercent)),
     left = 100 - used,
     usedLabel = Math.round(used),
     leftLabel = Math.round(left),
-    leftColor = `hsl(${left * 1.2} 70% 45%)`,
-    windowLabel = limitWindowLabel(x);
+    leftColor = `hsl(${left * 1.2} 70% 45%)`;
   return (
     <div className="limit-window">
-      <small>{windowLabel}</small>
+      <small>{label}</small>
       <div className="remaining">
         <strong style={{ color: leftColor }}>
           {leftLabel}
@@ -885,15 +927,14 @@ function LimitWindow({ x }: { x: Limit }) {
       <div className="reset">
         <small>下次重置</small>
         <b>
-          {x.resetsAt
-            ? new Date(x.resetsAt * 1000).toLocaleString()
-            : "暂未提供"}
+          {resetsAt ? new Date(resetsAt * 1000).toLocaleString() : "暂未提供"}
         </b>
-        <span>{x.resetsAt ? relative(x.resetsAt) : ""}</span>
+        <span>{resetsAt ? relative(resetsAt) : ""}</span>
       </div>
+      {details && <div className="limit-details">{details}</div>}
       <div
         className="bar"
-        aria-label={`${windowLabel}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
+        aria-label={`${label}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
       >
         <em style={{ width: left + "%", background: leftColor }} />
         <i style={{ width: used + "%" }} />
@@ -1865,6 +1906,14 @@ const duration = (v?: number | null) =>
       : v < 3600
         ? `${Math.floor(v / 60)} 分 ${v % 60} 秒`
         : `${(v / 3600).toFixed(1)} 小时`;
+const creditAmount = (value: string) => {
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(
+        amount,
+      )
+    : value;
+};
 const limitWindowLabel = (limit: Limit) => {
   const minutes = limit.windowDurationMinutes,
     window =

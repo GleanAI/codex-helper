@@ -119,6 +119,45 @@ func TestFlattenLimitHandlesNullWindowMetadata(t *testing.T) {
 	}
 }
 
+func TestMonthlyCreditLimitDecodesFromRateLimits(t *testing.T) {
+	var response struct {
+		RateLimits *rawLimit `json:"rateLimits"`
+	}
+	payload := `{
+		"rateLimits": {
+			"limitId": "codex",
+			"secondary": {"usedPercent": 7, "windowDurationMins": 10080, "resetsAt": 1787716800},
+			"individualLimit": {"remainingPercent": 68, "resetsAt": 1788235200, "used": "8000", "limit": "25000"}
+		}
+	}`
+	if err := json.Unmarshal([]byte(payload), &response); err != nil {
+		t.Fatal(err)
+	}
+	monthly := monthlyCreditLimitFrom(response.RateLimits, nil)
+	if monthly == nil {
+		t.Fatal("monthly credit limit is nil")
+	}
+	if monthly.RemainingPercent != 68 || monthly.ResetsAt != 1788235200 || monthly.Used != "8000" || monthly.Limit != "25000" {
+		t.Fatalf("monthly credit limit = %#v", monthly)
+	}
+}
+
+func TestMonthlyCreditLimitFallsBackToCanonicalBucket(t *testing.T) {
+	by := map[string]rawLimit{
+		"codex_other": {},
+		"codex": {
+			IndividualLimit: &rawMonthlyCreditLimit{RemainingPercent: 100, ResetsAt: 1788235200, Used: "0", Limit: "500"},
+		},
+	}
+	monthly := monthlyCreditLimitFrom(&rawLimit{}, by)
+	if monthly == nil || monthly.RemainingPercent != 100 || monthly.Limit != "500" {
+		t.Fatalf("monthly credit limit = %#v", monthly)
+	}
+	if monthlyCreditLimitFrom(&rawLimit{}, map[string]rawLimit{"codex": {}}) != nil {
+		t.Fatal("missing individualLimit should remain nil")
+	}
+}
+
 func TestAccountRenameUpdatesDashboardImmediately(t *testing.T) {
 	a := newReminderTestApp(t)
 	a.runtimes[1] = &accountRuntime{dash: Dashboard{

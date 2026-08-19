@@ -5,7 +5,7 @@
 ## 功能
 
 - 支持添加多个 Codex 账号或工作区，并在总览中合并展示同一邮箱的个人订阅与 Team / Business 工作区
-- 展示 Codex 账户、套餐、剩余额度和下次重置时间
+- 展示 Codex 账户、套餐、限额窗口，以及 app-server 提供时的月度 credits 用量和下次重置时间
 - 展示累计 Token、单日峰值 Tokens、历史天数及每日 Token 趋势
 - 在本地 SQLite 中保留历史用量和限额快照
 - 在限额重置前、重置后发送 Telegram 或邮件提醒

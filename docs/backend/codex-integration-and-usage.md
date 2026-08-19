@@ -23,12 +23,12 @@ account/login/start {type:"chatgptDeviceCode"}
 一次同步依次读取 `account/read`、`account/rateLimits/read` 和 `account/usage/read`：
 
 - `account/read` 决定连接、邮箱、认证模式和套餐；读取失败会使整次同步失败。
-- 限额读取兼容 `rateLimitsByLimitId` 多 bucket 和旧 `rateLimits` 单 bucket，再把 `primary`/`secondary` 位置展平。两者不对应固定周期；上游 nullable 的 `windowDurationMins` 标准化为 Dashboard 的 `windowDurationMinutes`，缺失时使用 `0`。读取失败时保留空限额而不令整次同步失败。
+- 限额读取兼容 `rateLimitsByLimitId` 多 bucket 和 `rateLimits` 单 bucket，再把 `primary`/`secondary` 位置展平。两者不对应固定周期；上游 nullable 的 `windowDurationMins` 标准化为 Dashboard 的 `windowDurationMinutes`，缺失时使用 `0`。可选的 `individualLimit` 作为独立 `monthlyCreditLimit` 返回，优先读取单 bucket 快照，缺失时回退到 multi-bucket 中的 canonical `codex` bucket；不把自然月额度伪装成固定时长窗口。读取失败时保留空限额和 `null` 月度额度而不令整次同步失败。
 - 套餐未知时，可从所有可分类且一致的限额 bucket 回填；冲突或未知时必须保持 unknown。
 - 用量读取保存 summary 和每日 Token bucket；接口失败时使用空摘要和空历史，不令整次同步失败。
 - 每次限额同步写入快照、检测用量百分比显著回落，并更新账号元数据及内存 Dashboard。
 
-`account/usage/read` 的 optional 指标和 daily buckets 可能暂未提供。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
+`account/rateLimits/read` 的 `individualLimit`、`account/usage/read` 的 optional 指标和 daily buckets 都可能暂未提供。能力按响应字段检测，不根据 Codex 版本或套餐猜测。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
 
 ## 套餐类型
 

@@ -543,6 +543,12 @@ header p {
   font-size: 18px;
   margin-top: 5px;
 }
+.limit-details {
+  grid-column: 1/-1;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .bar {
   grid-column: 1/-1;
   display: flex;

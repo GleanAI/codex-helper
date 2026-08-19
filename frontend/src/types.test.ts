@@ -16,6 +16,12 @@ describe("API decoders", () => {
       displayName: "Team",
       account: { email: null, planType: null, connected: false },
       limits: [],
+      monthlyCreditLimit: {
+        remainingPercent: 68,
+        resetsAt: 1_788_235_200,
+        used: "8000",
+        limit: "25000",
+      },
       summary: { lifetimeTokens: null },
       usage: [],
       fetchedAt: 0,
@@ -23,6 +29,37 @@ describe("API decoders", () => {
     });
     expect(value.summary.lifetimeTokens).toBeNull();
     expect(value.account.email).toBeNull();
+    expect(value.monthlyCreditLimit).toEqual({
+      remainingPercent: 68,
+      resetsAt: 1_788_235_200,
+      used: "8000",
+      limit: "25000",
+    });
+  });
+
+  it("兼容缺失的月度额度并拒绝非法字段", () => {
+    const dashboard = {
+      accountId: 1,
+      displayName: "Team",
+      account: { email: null, planType: "business", connected: true },
+      limits: [],
+      summary: {},
+      usage: [],
+      fetchedAt: 0,
+      stale: false,
+    };
+    expect(decodeDashboard(dashboard).monthlyCreditLimit).toBeNull();
+    expect(() =>
+      decodeDashboard({
+        ...dashboard,
+        monthlyCreditLimit: {
+          remainingPercent: "68",
+          resetsAt: 1_788_235_200,
+          used: "8000",
+          limit: "25000",
+        },
+      }),
+    ).toThrow("remainingPercent格式无效");
   });
 
   it("拒绝未知主题", () => {
