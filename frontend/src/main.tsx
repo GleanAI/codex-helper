@@ -446,10 +446,7 @@ function OverviewPage() {
 
   return (
     <>
-      <Header
-        title="用量总览"
-        sub="同一邮箱的个人订阅与 Team / Business 工作区合并展示"
-      />
+      <Header title="用量总览" />
       {error && <div className="banner">{error}</div>}
       <div className="overview-grid">
         {groupAccounts(accounts).map((group) => (
