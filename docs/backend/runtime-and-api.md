@@ -14,7 +14,7 @@
 - `internal/store/store.go`：SQLite schema、兼容迁移和数据方法。
 - `internal/codex/client.go`：与 `codex app-server` 的 JSONL 请求/响应关联。
 
-所有路由由 `http.ServeMux` 承载。API 先处理三个匿名入口，再统一调用 `require`；前端资源从 Go `embed.FS` 提供，未知浏览器路径回退到 `index.html`。完整端点以 [`backend/CONTRACT.md`](../../backend/CONTRACT.md) 为准。
+所有路由由 `http.ServeMux` 承载。API 先处理 status、setup、login 和脱敏公开总览四个匿名入口，再统一调用 `require`；前端资源从 Go `embed.FS` 提供，未知浏览器路径回退到 `index.html`。公开总览仅聚合数据库账号元数据和加锁读取的内存 Dashboard 快照，不触发同步。完整端点以 [`backend/CONTRACT.md`](../../backend/CONTRACT.md) 为准。
 
 ## 后台任务
 

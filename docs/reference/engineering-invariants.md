@@ -4,7 +4,7 @@
 
 ## API 与认证
 
-- [`backend/CONTRACT.md`](../../backend/CONTRACT.md) 是路径、状态码、响应字段和兼容文案的契约。匿名入口只能是当前 status、setup 和 login。
+- [`backend/CONTRACT.md`](../../backend/CONTRACT.md) 是路径、状态码、响应字段和兼容文案的契约。匿名入口只能是当前 status、setup、login 和脱敏的 public overview；公开用量不得返回完整邮箱、内部 ID、原始错误、Token 摘要或历史。
 - 所有受保护端点必须回查 session；非只读请求还必须验证 `X-Requested-With`。前端路由与按钮不能代替后端门禁。
 - session 原 token 只进入 cookie，SQLite 只保存摘要；密码保持 argon2id。错误和日志不得包含密码、cookie、Bot Token、SMTP 密码或 Codex token。
 - 初始化是事务性单管理员创建。新增自动初始化能力前必须保留并发与首次公网暴露的安全边界。

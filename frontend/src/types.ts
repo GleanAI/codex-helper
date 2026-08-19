@@ -78,6 +78,31 @@ export interface Dashboard {
   stale: boolean;
   lastError?: string;
 }
+export type PublicConnectionStatus =
+  "offline" | "failed" | "loading" | "pending" | "stale" | "healthy";
+export interface PublicOverview {
+  cards: Array<{
+    title: string;
+    emailIdentified: boolean;
+    connections: Array<{
+      displayName: string;
+      planType: string | null;
+      kind: "personal" | "team" | "unknown";
+      status: PublicConnectionStatus;
+      fetchedAt: number;
+      limits: Array<{
+        limitName: string | null;
+        windowDurationMinutes: number;
+        usedPercent: number;
+        resetsAt: number;
+      }>;
+      monthlyCreditLimit: {
+        remainingPercent: number;
+        resetsAt: number;
+      } | null;
+    }>;
+  }>;
+}
 export interface GeneralSettings {
   timezone: string;
   theme: Theme;
@@ -231,6 +256,66 @@ export const decodeDashboard: Decoder<Dashboard> = (value) => {
     fetchedAt: number(x.fetchedAt, "fetchedAt"),
     stale: boolean(x.stale, "stale"),
     ...(typeof x.lastError === "string" ? { lastError: x.lastError } : {}),
+  };
+};
+export const decodePublicOverview: Decoder<PublicOverview> = (value) => {
+  const x = record(value, "公开总览");
+  if (!Array.isArray(x.cards)) throw new Error("公开总览卡片格式无效");
+  return {
+    cards: x.cards.map((cardValue) => {
+      const card = record(cardValue, "公开总览卡片");
+      if (!Array.isArray(card.connections))
+        throw new Error("公开总览连接格式无效");
+      return {
+        title: string(card.title, "title"),
+        emailIdentified: boolean(card.emailIdentified, "emailIdentified"),
+        connections: card.connections.map((connectionValue) => {
+          const connection = record(connectionValue, "公开总览连接"),
+            monthly =
+              connection.monthlyCreditLimit == null
+                ? null
+                : record(connection.monthlyCreditLimit, "monthlyCreditLimit");
+          if (!Array.isArray(connection.limits))
+            throw new Error("公开总览限额格式无效");
+          return {
+            displayName: string(connection.displayName, "displayName"),
+            planType: nullableString(connection.planType, "planType"),
+            kind: enumValue(
+              connection.kind,
+              ["personal", "team", "unknown"],
+              "kind",
+            ),
+            status: enumValue(
+              connection.status,
+              ["offline", "failed", "loading", "pending", "stale", "healthy"],
+              "status",
+            ),
+            fetchedAt: number(connection.fetchedAt, "fetchedAt"),
+            limits: connection.limits.map((limitValue) => {
+              const limit = record(limitValue, "公开总览限额");
+              return {
+                limitName: nullableString(limit.limitName, "limitName"),
+                windowDurationMinutes: number(
+                  limit.windowDurationMinutes,
+                  "windowDurationMinutes",
+                ),
+                usedPercent: number(limit.usedPercent, "usedPercent"),
+                resetsAt: number(limit.resetsAt, "resetsAt"),
+              };
+            }),
+            monthlyCreditLimit: monthly
+              ? {
+                  remainingPercent: number(
+                    monthly.remainingPercent,
+                    "remainingPercent",
+                  ),
+                  resetsAt: number(monthly.resetsAt, "resetsAt"),
+                }
+              : null,
+          };
+        }),
+      };
+    }),
   };
 };
 export const decodeGeneral: Decoder<GeneralSettings> = (value) => {

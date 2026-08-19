@@ -48,6 +48,7 @@ import {
   type TelegramSettingsForm,
 } from "./types";
 import { groupAccounts } from "./overview";
+import PublicPage from "./public-page";
 import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
@@ -75,6 +76,10 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
+        <Route
+          path="/public"
+          element={<PublicPage version={status.version} />}
+        />
         {authenticated ? (
           <Route path="*" element={<Shell version={status.version} />} />
         ) : (

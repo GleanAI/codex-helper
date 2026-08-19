@@ -38,7 +38,7 @@ Codex Helper 是单容器部署的 Codex 账户用量仪表盘，通过 Codex ap
 
 ## 必须保持的约束
 
-- HTTP 业务接口保持在 `/api/v1/`；未初始化状态只开放 status、setup 和 login，其他接口必须经过 session 与非只读请求来源校验。
+- HTTP 业务接口保持在 `/api/v1/`；未初始化状态只开放 status、setup 和 login，初始化后额外开放脱敏的 public overview，其他接口必须经过 session 与非只读请求来源校验。
 - `backend/internal/store/store.go` 中的 schema 和兼容迁移是 SQLite 结构的事实来源；启动迁移必须保留旧库数据并保持幂等。
 - 账号 ID `1` 的 Codex 凭据固定保留在 `/data/codex`；其他账号使用 `/data/accounts/<id>/codex`，升级时不得搬迁旧路径。
 - 每个账号拥有独立 app-server 进程和 `CODEX_HOME`；启动、初始化、同步和停止必须维持现有串行化与并发保护。

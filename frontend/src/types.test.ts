@@ -6,6 +6,7 @@ import {
   decodeDashboard,
   decodeDeviceLogin,
   decodeGeneral,
+  decodePublicOverview,
   decodeTelegram,
 } from "./types";
 
@@ -74,6 +75,50 @@ describe("API decoders", () => {
         notifyAfter: true,
       }),
     ).toThrow("theme格式无效");
+  });
+
+  it("解码脱敏的公开总览并拒绝未知状态", () => {
+    const response = {
+      cards: [
+        {
+          title: "t**t@e*****e.com",
+          emailIdentified: true,
+          connections: [
+            {
+              displayName: "默认账号",
+              planType: "plus",
+              kind: "personal",
+              status: "healthy",
+              fetchedAt: 100,
+              limits: [
+                {
+                  limitName: null,
+                  windowDurationMinutes: 300,
+                  usedPercent: 25,
+                  resetsAt: 200,
+                },
+              ],
+              monthlyCreditLimit: null,
+            },
+          ],
+        },
+      ],
+    };
+    expect(decodePublicOverview(response).cards[0].connections[0].status).toBe(
+      "healthy",
+    );
+    expect(() =>
+      decodePublicOverview({
+        cards: [
+          {
+            ...response.cards[0],
+            connections: [
+              { ...response.cards[0].connections[0], status: "secret" },
+            ],
+          },
+        ],
+      }),
+    ).toThrow("status格式无效");
   });
 
   it("只接受 HTTPS 设备授权地址", () => {

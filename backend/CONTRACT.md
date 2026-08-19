@@ -8,7 +8,7 @@
 - `GET /health/live` 始终返回 `200 {"status":"ok"}`；`GET /health/ready` 在 SQLite 可用时返回 `200 {"status":"ok","appServer":bool}`，数据库不可用时返回 `503 {"error":string}`。`appServer` 表示至少一个账号的 app-server 已完成初始化。
 - JSON 请求体最多读取 1 MiB，拒绝未知字段；业务错误统一为 `{"error":string}`。未匹配 API 返回 `404 {"error":"接口不存在"}`。
 - 所有响应带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: same-origin` 和同源 CSP。
-- `GET /api/v1/system/status`、`POST /api/v1/setup`、`POST /api/v1/auth/login` 匿名可用。status 的其他方法返回 405；其余 API 要求有效 `session` cookie，非 `GET`/`HEAD` 请求还要求 `X-Requested-With: codex-helper`，否则分别返回 401 或 403。当前 dispatcher 只对部分路由显式限制 HTTP method；下文使用“任意方法”或“非 `GET`”的地方是对实际兼容行为的记录。
+- `GET /api/v1/system/status`、`POST /api/v1/setup`、`POST /api/v1/auth/login` 和 `GET /api/v1/public/overview` 匿名可用。status 与 public overview 的其他方法返回 405；其余 API 要求有效 `session` cookie，非 `GET`/`HEAD` 请求还要求 `X-Requested-With: codex-helper`，否则分别返回 401 或 403。当前 dispatcher 只对部分路由显式限制 HTTP method；下文使用“任意方法”或“非 `GET`”的地方是对实际兼容行为的记录。
 - session 有效期七天，cookie 为 `HttpOnly`、`SameSite=Strict`、`Path=/`；数据库只保存 token 摘要。登录失败按 `RemoteAddr` 在进程内限制为 15 分钟最多 10 次，超限返回 429。
 - 未命中静态文件的非 API GET 路径返回嵌入的 `index.html`，供前端路由回退。
 
@@ -54,6 +54,26 @@
 兼容文案包括：`系统已初始化`、`用户名至少3位，密码至少10位`、`用户名至少3位，新密码至少10位`、`请先初始化`、`用户名或密码错误`、`当前密码错误`、`尝试次数过多，请稍后再试`、`未登录`、`请求来源校验失败`。
 
 ## 4. Codex 账号与用量
+
+### 公开用量
+
+`GET /api/v1/public/overview` 无需 session，返回管理端总览所需信息的脱敏聚合视图，并带 `Cache-Control: no-store`：
+
+```text
+{cards:[{
+  title, emailIdentified,
+  connections:[{
+    displayName, planType:string|null,
+    kind:"personal"|"team"|"unknown",
+    status:"offline"|"failed"|"loading"|"pending"|"stale"|"healthy",
+    fetchedAt,
+    limits:[{limitName:string|null,windowDurationMinutes,usedPercent,resetsAt}],
+    monthlyCreditLimit:{remainingPercent,resetsAt}|null
+  }]
+}]}
+```
+
+同一邮箱去除首尾空白并忽略大小写后合并为一张卡片；无邮箱连接各自成卡。`title` 中的邮箱已由服务端掩码。响应不包含账号 ID、完整邮箱、原始同步错误、认证模式、内部 limit ID、Token 摘要或历史。读取只使用当前内存快照，不触发 Codex 同步。系统未初始化时返回 409 `请先初始化`，内部读取失败返回 500 `无法读取公开用量`。
 
 | 方法与路径 | 请求与响应 |
 | --- | --- |

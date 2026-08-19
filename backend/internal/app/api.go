@@ -43,6 +43,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		a.login(w, r)
 		return
 	}
+	if p == "public/overview" {
+		a.publicOverview(w, r)
+		return
+	}
 	if !a.require(w, r) {
 		return
 	}
