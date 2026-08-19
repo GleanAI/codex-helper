@@ -350,195 +350,6 @@ header p {
   gap: 14px;
   align-items: start;
 }
-.overview-card {
-  min-width: 0;
-  overflow: hidden;
-  border-radius: 14px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.035);
-}
-.overview-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 48px;
-  padding: 12px 15px;
-  border-bottom: 1px solid var(--border);
-}
-.overview-card-header h2,
-.overview-connection-header h3 {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.overview-card-header h2 {
-  font-size: 16px;
-  letter-spacing: -0.02em;
-}
-.overview-connections {
-  display: grid;
-  gap: 1px;
-  background: var(--border);
-}
-.overview-connection {
-  min-width: 0;
-  padding: 13px 15px 15px;
-  background: var(--panel);
-}
-.overview-connection-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.overview-connection-title {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-.overview-connection-title > div {
-  min-width: 0;
-}
-.overview-status-dot {
-  flex: 0 0 9px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--muted);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted) 12%, transparent);
-}
-.overview-status-dot.healthy {
-  background: var(--green);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 12%, transparent);
-}
-.overview-status-dot.pending,
-.overview-status-dot.stale {
-  background: #e2a126;
-  box-shadow: 0 0 0 4px color-mix(in srgb, #e2a126 14%, transparent);
-}
-.overview-status-dot.offline,
-.overview-status-dot.failed {
-  background: var(--danger);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 12%, transparent);
-}
-.overview-connection-header h3 {
-  font-size: 15px;
-  line-height: 1.25;
-}
-.overview-connection-title small {
-  display: block;
-  margin-top: 3px;
-  font-size: 11px;
-}
-.overview-connection-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-.overview-connection-actions .badge,
-.overview-card-header .badge {
-  padding: 4px 8px;
-  font-size: 11px;
-}
-.overview-connection-actions button {
-  min-height: 32px;
-  padding: 5px 9px;
-  border-radius: 8px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.overview-status {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 9px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.overview-status-label {
-  font-weight: 600;
-}
-.overview-status-label.healthy {
-  color: var(--green);
-}
-.overview-status-label.pending,
-.overview-status-label.stale {
-  color: #c5810a;
-}
-.overview-status-label.offline,
-.overview-status-label.failed {
-  color: var(--danger);
-}
-.overview-warning {
-  margin-top: 9px;
-  padding: 7px 9px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  color: var(--danger);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.overview-windows {
-  display: grid;
-  margin-top: 10px;
-  border-top: 1px solid var(--border);
-}
-.overview-window {
-  min-width: 0;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-.overview-window:last-child {
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-.overview-window-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-.overview-window-top small {
-  overflow-wrap: anywhere;
-  font-size: 11px;
-  font-weight: 600;
-}
-.overview-window-top strong {
-  flex: none;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-}
-.overview-window .bar {
-  height: 6px;
-  margin-top: 7px;
-}
-.overview-reset {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 6px;
-  align-items: baseline;
-  margin-top: 7px;
-  font-size: 10px;
-}
-.overview-reset span {
-  color: var(--muted);
-  white-space: nowrap;
-}
-.overview-reset b {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-weight: 500;
-}
-.overview-empty {
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--track) 60%, transparent);
-  color: var(--muted);
-  text-align: center;
-  font-size: 12px;
-}
 .balance {
   overflow: hidden;
 }
@@ -1009,7 +820,7 @@ a {
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
   }
-  .overview-connection-actions button {
+  .overview-connection .usage-connection-actions button {
     min-height: 44px;
     padding-inline: 12px;
   }
@@ -1124,18 +935,9 @@ a {
   .balance-updated {
     flex-basis: 100%;
   }
-  .overview-connection-header {
-    align-items: flex-start;
-  }
-  .overview-connection-actions {
+  .overview-connection .usage-connection-actions {
     align-items: flex-end;
     flex-direction: column;
-  }
-  .overview-reset {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  .overview-reset span:last-child {
-    grid-column: 2;
   }
   .limit-window {
     grid-template-columns: 1fr;
@@ -1167,8 +969,8 @@ a {
   }
 }
 
-/* The public status page deliberately has its own visual language and does not
-   inherit the authenticated dashboard shell or overview card layout. */
+/* The public page keeps its own shell and density rules while sharing usage
+   card visuals with the authenticated overview. */
 .public-page {
   min-height: 100vh;
   min-height: 100dvh;
@@ -1288,7 +1090,7 @@ a {
   gap: 14px;
   align-items: start;
 }
-.public-usage-card {
+.usage-card {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1297,7 +1099,7 @@ a {
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.05);
   backdrop-filter: blur(14px);
 }
-.public-card-header {
+.usage-card-header {
   min-height: 60px;
   margin: 0;
   padding: 12px 15px;
@@ -1309,21 +1111,21 @@ a {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--track) 28%, transparent);
 }
-.public-card-header span {
+.usage-card-header span {
   color: var(--muted);
   font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
-.public-card-header h2 {
+.usage-card-header h2 {
   margin: 3px 0 0;
   font-size: 16px;
   line-height: 1.25;
   letter-spacing: -0.025em;
   overflow-wrap: anywhere;
 }
-.public-card-header > small {
+.usage-card-header > small {
   flex: none;
   padding: 4px 8px;
   border-radius: 99px;
@@ -1331,35 +1133,45 @@ a {
   color: var(--muted);
   font-size: 11px;
 }
-.public-connections {
+.usage-connections {
   display: grid;
   gap: 1px;
   background: var(--border);
 }
-.public-connection {
+.usage-connection {
   min-width: 0;
   padding: 12px 14px 13px;
   background: var(--panel);
 }
-.public-connection-heading {
+.usage-connection-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
-.public-connection-heading h3 {
+.usage-connection-heading > div:first-child {
+  min-width: 0;
+}
+.usage-connection-heading h3 {
   margin: 0;
   font-size: 15px;
   letter-spacing: -0.02em;
   overflow-wrap: anywhere;
 }
-.public-connection-heading div > span {
+.usage-connection-heading > div:first-child > span {
   display: block;
   margin-top: 3px;
   color: var(--muted);
   font-size: 11px;
 }
-.public-plan {
+.usage-connection-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.usage-plan {
   flex: none;
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -1367,7 +1179,14 @@ a {
   color: var(--muted);
   font-size: 11px;
 }
-.public-status {
+.usage-connection-actions button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.usage-status {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1378,48 +1197,57 @@ a {
   background: color-mix(in srgb, var(--track) 50%, transparent);
   font-size: 11px;
 }
-.public-status i {
+.usage-status i {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--green);
 }
-.public-status strong {
+.usage-status strong {
   color: var(--green);
   white-space: nowrap;
 }
-.public-status span,
-.public-status time {
+.usage-status span,
+.usage-status time {
   color: var(--muted);
 }
-.public-status time {
+.usage-status time {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.public-status-pending i,
-.public-status-stale i,
-.public-status-loading i {
+.usage-status-pending i,
+.usage-status-stale i,
+.usage-status-loading i {
   background: #e2a126;
 }
-.public-status-pending strong,
-.public-status-stale strong,
-.public-status-loading strong {
+.usage-status-pending strong,
+.usage-status-stale strong,
+.usage-status-loading strong {
   color: #c5810a;
 }
-.public-status-offline i,
-.public-status-failed i {
+.usage-status-offline i,
+.usage-status-failed i {
   background: var(--danger);
 }
-.public-status-offline strong,
-.public-status-failed strong {
+.usage-status-offline strong,
+.usage-status-failed strong {
   color: var(--danger);
 }
-.public-limits {
+.usage-warning {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.usage-limits {
   display: grid;
   gap: 8px;
   margin-top: 10px;
 }
-.public-limit {
+.usage-limit {
   min-width: 0;
   display: grid;
   grid-template-columns: 60px minmax(0, 1fr);
@@ -1430,7 +1258,7 @@ a {
   border-radius: 12px;
   background: color-mix(in srgb, var(--bg) 45%, var(--panel));
 }
-.public-limit-gauge {
+.usage-limit-gauge {
   width: 60px;
   height: 60px;
   padding: 5px;
@@ -1440,7 +1268,7 @@ a {
     var(--track) 0
   );
 }
-.public-limit-gauge > div {
+.usage-limit-gauge > div {
   width: 100%;
   height: 100%;
   display: grid;
@@ -1451,55 +1279,55 @@ a {
   border-radius: 50%;
   background: var(--panel);
 }
-.public-limit-gauge strong {
+.usage-limit-gauge strong {
   font-size: 19px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
 }
-.public-limit-gauge span {
+.usage-limit-gauge span {
   margin-left: 2px;
   color: var(--muted);
   font-size: 10px;
   line-height: 1;
 }
-.public-limit-details {
+.usage-limit-details {
   min-width: 0;
 }
-.public-limit-details h4 {
+.usage-limit-details h4 {
   margin: 0;
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.public-limit-details > span {
+.usage-limit-details > span {
   display: block;
   margin-top: 2px;
   color: var(--muted);
   font-size: 10px;
 }
-.public-limit-reset {
+.usage-limit-reset {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px 8px;
   margin-top: 7px;
 }
-.public-limit-reset small {
+.usage-limit-reset small {
   grid-column: 1 / -1;
   color: var(--muted);
   font-size: 10px;
 }
-.public-limit-reset strong {
+.usage-limit-reset strong {
   min-width: 0;
   font-size: 11px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.public-limit-reset span {
+.usage-limit-reset span {
   color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
 }
-.public-no-limits {
+.usage-no-limits {
   margin-top: 10px;
   padding: 14px;
   border: 1px dashed var(--border);
@@ -1581,13 +1409,13 @@ a {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
-  .public-usage-card {
+  .usage-card {
     border-radius: 14px;
   }
-  .public-status {
+  .usage-status {
     grid-template-columns: auto auto minmax(0, 1fr);
   }
-  .public-status time {
+  .usage-status time {
     grid-column: 2 / -1;
   }
 }
@@ -1599,42 +1427,42 @@ a {
     padding-top: 8px;
     padding-bottom: 10px;
   }
-  .public-card-header {
+  .public-page .usage-card-header {
     min-height: 50px;
     padding: 8px 12px;
   }
-  .public-card-header h2 {
+  .public-page .usage-card-header h2 {
     margin-top: 2px;
   }
-  .public-connection {
+  .public-page .usage-connection {
     padding: 10px 12px 11px;
   }
-  .public-connection-heading div > span {
+  .public-page .usage-connection-heading > div:first-child > span {
     margin-top: 2px;
   }
-  .public-status {
+  .public-page .usage-status {
     gap: 6px;
     margin-top: 7px;
     padding: 6px 8px;
   }
-  .public-limits {
+  .public-page .usage-limits {
     gap: 6px;
     margin-top: 7px;
   }
-  .public-limit {
+  .public-page .usage-limit {
     grid-template-columns: 52px minmax(0, 1fr);
     gap: 9px;
     padding: 6px 8px;
   }
-  .public-limit-gauge {
+  .public-page .usage-limit-gauge {
     width: 52px;
     height: 52px;
     padding: 4px;
   }
-  .public-limit-gauge strong {
+  .public-page .usage-limit-gauge strong {
     font-size: 17px;
   }
-  .public-limit-reset {
+  .public-page .usage-limit-reset {
     margin-top: 4px;
   }
   .public-footer {
@@ -1650,30 +1478,30 @@ a {
     padding-top: 6px;
     padding-bottom: 8px;
   }
-  .public-card-header {
+  .public-page .usage-card-header {
     min-height: 46px;
     padding: 6px 10px;
   }
-  .public-connection {
+  .public-page .usage-connection {
     padding: 8px 10px 9px;
   }
-  .public-status {
+  .public-page .usage-status {
     margin-top: 5px;
     padding-block: 5px;
   }
-  .public-limits {
+  .public-page .usage-limits {
     gap: 4px;
     margin-top: 5px;
   }
-  .public-limit {
+  .public-page .usage-limit {
     grid-template-columns: 48px minmax(0, 1fr);
     padding: 4px 7px;
   }
-  .public-limit-gauge {
+  .public-page .usage-limit-gauge {
     width: 48px;
     height: 48px;
   }
-  .public-no-limits {
+  .public-page .usage-no-limits {
     margin-top: 5px;
     padding: 8px;
   }
@@ -1698,18 +1526,18 @@ a {
   .public-login-button {
     padding: 0 13px;
   }
-  .public-card-header {
+  .usage-card-header {
     align-items: flex-start;
   }
-  .public-connection-heading {
+  .usage-connection-heading {
     gap: 8px;
   }
-  .public-limit {
+  .usage-limit {
     grid-template-columns: 60px minmax(0, 1fr);
     gap: 10px;
     padding: 9px;
   }
-  .public-limit-gauge {
+  .usage-limit-gauge {
     width: 60px;
     height: 60px;
   }

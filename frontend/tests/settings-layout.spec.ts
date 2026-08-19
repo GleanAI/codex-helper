@@ -375,8 +375,10 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(
     merged.getByText("Team / Business 工作区", { exact: true }),
   ).toBeVisible();
-  await expect(merged.locator(".overview-window")).toHaveCount(4);
-  await expect(merged.getByText("75% 剩余", { exact: true })).toBeVisible();
+  await expect(merged.locator(".usage-limit")).toHaveCount(4);
+  await expect(
+    merged.locator('.usage-limit-gauge[aria-label*="剩余 75%"]'),
+  ).toBeVisible();
   const teamConnection = merged.locator(".overview-connection", {
     hasText: "Team workspace",
   });
@@ -384,28 +386,31 @@ test("overview merges personal and Team connections for the same email", async (
     teamConnection.getByText("月度额度", { exact: true }),
   ).toBeVisible();
   await expect(
-    teamConnection.getByText("100% 剩余", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    teamConnection.locator('.bar[aria-label="月度额度：已使用 0%，剩余 100%"]'),
+    teamConnection.locator(
+      '.usage-limit-gauge[aria-label="月度额度：剩余 100%"]',
+    ),
   ).toBeVisible();
   await expect(merged.getByText("下次重置").first()).toBeVisible();
-  await expect(page.getByText("邮箱待识别", { exact: true })).toBeVisible();
+  await expect(
+    cards
+      .filter({ hasText: "尚未登录" })
+      .locator(".usage-card-header > div > span"),
+  ).toHaveText("连接");
   await expect(page.getByRole("button", { name: "立即刷新" })).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("test@example.com");
 
   const geometry = await cards.first().evaluate((element) => ({
     cardWidth: element.getBoundingClientRect().width,
-    progressHeight: element
-      .querySelector(".overview-window .bar")
-      ?.getBoundingClientRect().height,
+    gaugeSize: element
+      .querySelector(".usage-limit-gauge")
+      ?.getBoundingClientRect().width,
     viewportWidth: document.documentElement.clientWidth,
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
   if (testInfo.project.name === "desktop")
     expect(geometry.cardWidth).toBeLessThan(350);
-  expect(geometry.progressHeight).toBe(6);
+  expect(geometry.gaugeSize).toBe(60);
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
 
   await merged
@@ -466,9 +471,7 @@ test("overview uses compact columns across desktop sizes", async ({
   await page.goto("/overview");
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(4);
-  await expect(
-    cards.first().locator(".overview-status-dot.healthy"),
-  ).toBeVisible();
+  await expect(cards.first().locator(".usage-status-healthy")).toBeVisible();
   const compactGeometry = await cards.evaluateAll((elements) =>
     elements.map((element) => {
       const rect = element.getBoundingClientRect();
@@ -532,17 +535,11 @@ test("overview does not report a connection as healthy before its dashboard load
   await page.goto("/overview");
   const connection = page.locator(".overview-connection");
   await expect(connection.getByText("正在读取", { exact: true })).toBeVisible();
-  await expect(
-    connection.locator(".overview-status-dot.loading"),
-  ).toBeVisible();
-  await expect(connection.locator(".overview-status-dot.healthy")).toHaveCount(
-    0,
-  );
+  await expect(connection.locator(".usage-status-loading")).toBeVisible();
+  await expect(connection.locator(".usage-status-healthy")).toHaveCount(0);
   releaseDashboard();
-  await expect(connection.getByText("已连接", { exact: true })).toBeVisible();
-  await expect(
-    connection.locator(".overview-status-dot.healthy"),
-  ).toBeVisible();
+  await expect(connection.getByText("运行正常", { exact: true })).toBeVisible();
+  await expect(connection.locator(".usage-status-healthy")).toBeVisible();
 });
 
 test("overview keeps healthy connections visible when one dashboard fails", async ({
@@ -593,12 +590,12 @@ test("overview keeps healthy connections visible when one dashboard fails", asyn
   ).toBeVisible();
   await expect(page.getByText("账号不存在", { exact: true })).toBeVisible();
   const healthy = page.locator(".overview-connection", { hasText: "默认账号" });
-  await expect(healthy.getByText("已连接", { exact: true })).toBeVisible();
-  await expect(healthy.locator(".overview-status-dot.healthy")).toBeVisible();
+  await expect(healthy.getByText("运行正常", { exact: true })).toBeVisible();
+  await expect(healthy.locator(".usage-status-healthy")).toBeVisible();
   const failed = page.locator(".overview-connection", { hasText: "失效连接" });
   await expect(failed.getByText("读取失败", { exact: true })).toBeVisible();
-  await expect(failed.locator(".overview-status-dot.failed")).toBeVisible();
-  await expect(failed.locator(".overview-status-dot.healthy")).toHaveCount(0);
+  await expect(failed.locator(".usage-status-failed")).toBeVisible();
+  await expect(failed.locator(".usage-status-healthy")).toHaveCount(0);
   await expect(page.locator(".overview-card")).toHaveCount(2);
 });
 

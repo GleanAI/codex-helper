@@ -44,11 +44,13 @@ import {
   type GeneralSettings,
   type Limit,
   type MonthlyCreditLimit,
+  type PublicConnectionStatus,
   type SMTPSettingsForm,
   type TelegramSettingsForm,
 } from "./types";
 import { groupAccounts } from "./overview";
 import PublicPage from "./public-page";
+import { kindLabel, planLabel, UsageCard, UsageConnection } from "./usage-card";
 import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
@@ -473,21 +475,21 @@ function OverviewPage() {
       {error && <div className="banner">{error}</div>}
       <div className="overview-grid">
         {groupAccounts(accounts).map((group) => (
-          <section className="panel overview-card" key={group.key}>
-            <div className="overview-card-header">
-              <h2>
-                {group.email
-                  ? maskEmail(group.email)
-                  : group.accounts[0].displayName}
-              </h2>
-              {!group.email && <span className="badge">邮箱待识别</span>}
-            </div>
-            <div className="overview-connections">
-              {group.accounts.map((account) => (
-                <OverviewConnection account={account} key={account.id} />
-              ))}
-            </div>
-          </section>
+          <UsageCard
+            className="overview-card"
+            title={
+              group.email
+                ? maskEmail(group.email)
+                : group.accounts[0].displayName
+            }
+            emailIdentified={Boolean(group.email)}
+            connectionCount={group.accounts.length}
+            key={group.key}
+          >
+            {group.accounts.map((account) => (
+              <OverviewConnection account={account} key={account.id} />
+            ))}
+          </UsageCard>
         ))}
       </div>
     </>
@@ -557,18 +559,7 @@ function OverviewConnection({ account }: { account: Account }) {
   }, [account.id]);
 
   const dashboardFailed = Boolean(error || dashboard?.lastError);
-  const status = !account.connected
-    ? "未连接"
-    : dashboardFailed
-      ? "读取失败"
-      : !dashboard
-        ? "正在读取"
-        : account.actualKind === "unknown"
-          ? "套餐待识别"
-          : dashboard.stale
-            ? "数据可能已过期"
-            : "已连接";
-  const statusTone = !account.connected
+  const statusTone: PublicConnectionStatus = !account.connected
     ? "offline"
     : dashboardFailed
       ? "failed"
@@ -584,102 +575,42 @@ function OverviewConnection({ account }: { account: Account }) {
     navigate("/details");
   };
 
-  return (
-    <article className="overview-connection">
-      <div className="overview-connection-header">
-        <div className="overview-connection-title">
-          <span
-            className={`overview-status-dot ${statusTone}`}
-            aria-hidden="true"
-          />
-          <div>
-            <h3>{account.displayName}</h3>
-            <small>{accountKindLabel(account)}</small>
-          </div>
-        </div>
-        <div className="overview-connection-actions">
-          <span className="badge">{planLabel(account.planType)}</span>
-          <button className="secondary" onClick={openDetails}>
-            查看详情
-          </button>
-        </div>
-      </div>
-      <div className="overview-status">
-        <span className={`overview-status-label ${statusTone}`}>{status}</span>
-        <span>
-          {dashboard?.fetchedAt
-            ? `更新于 ${new Date(dashboard.fetchedAt * 1000).toLocaleString()}`
-            : "尚未同步"}
-        </span>
-      </div>
-      {(error || dashboard?.lastError) && (
-        <div className="overview-warning">{error || dashboard?.lastError}</div>
-      )}
-      {!dashboard && !error ? (
-        <div className="overview-empty">正在读取限额…</div>
-      ) : dashboard?.limits.length || dashboard?.monthlyCreditLimit ? (
-        <div className="overview-windows">
-          {dashboard.limits.map((limit) => (
-            <OverviewLimitWindow
-              key={`${limit.limitId}:${limit.windowType}`}
-              label={limitWindowLabel(limit)}
-              usedPercent={limit.usedPercent}
-              resetsAt={limit.resetsAt}
-            />
-          ))}
-          {dashboard.monthlyCreditLimit && (
-            <OverviewLimitWindow
-              key="monthly-credit-limit"
-              label="月度额度"
-              usedPercent={100 - dashboard.monthlyCreditLimit.remainingPercent}
-              resetsAt={dashboard.monthlyCreditLimit.resetsAt}
-            />
-          )}
-        </div>
-      ) : (
-        <div className="overview-empty">
-          {account.connected ? "暂无限额数据" : "登录后显示限额窗口"}
-        </div>
-      )}
-    </article>
-  );
-}
+  const limits =
+    dashboard?.limits.map((limit) => ({
+      label: limitWindowLabel(limit),
+      usedPercent: limit.usedPercent,
+      resetsAt: limit.resetsAt,
+    })) ?? [];
+  if (dashboard?.monthlyCreditLimit)
+    limits.push({
+      label: "月度额度",
+      usedPercent: 100 - dashboard.monthlyCreditLimit.remainingPercent,
+      resetsAt: dashboard.monthlyCreditLimit.resetsAt,
+    });
 
-function OverviewLimitWindow({
-  label,
-  usedPercent,
-  resetsAt,
-}: {
-  label: string;
-  usedPercent: number;
-  resetsAt: number;
-}) {
-  const used = Math.min(100, Math.max(0, usedPercent));
-  const left = 100 - used;
-  const usedLabel = Math.round(used);
-  const leftLabel = Math.round(left);
-  const leftColor = `hsl(${left * 1.2} 70% 45%)`;
   return (
-    <div className="overview-window">
-      <div className="overview-window-top">
-        <small>{label}</small>
-        <strong style={{ color: leftColor }}>{leftLabel}% 剩余</strong>
-      </div>
-      <div
-        className="bar"
-        aria-label={`${label}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
-      >
-        <em style={{ width: left + "%", background: leftColor }} />
-        <i style={{ width: used + "%" }} />
-      </div>
-      <div className="overview-reset">
-        <span>下次重置</span>
-        <b>
-          {resetsAt ? new Date(resetsAt * 1000).toLocaleString() : "暂未提供"}
-        </b>
-        <span>{resetsAt ? relative(resetsAt) : ""}</span>
-      </div>
-    </div>
+    <UsageConnection
+      className="overview-connection"
+      displayName={account.displayName}
+      kind={kindLabel(account.actualKind)}
+      plan={planLabel(account.planType)}
+      status={statusTone}
+      fetchedAt={dashboard?.fetchedAt ?? 0}
+      limits={limits}
+      emptyMessage={
+        !dashboard && !error
+          ? "正在读取限额…"
+          : account.connected
+            ? "暂无限额数据"
+            : "登录后显示限额窗口"
+      }
+      error={error || dashboard?.lastError}
+      action={
+        <button className="secondary" onClick={openDetails}>
+          查看详情
+        </button>
+      }
+    />
   );
 }
 
@@ -1981,29 +1912,6 @@ const maskEmail = (email: string) => {
     )
     .join(".")}`;
 };
-const planLabel = (plan?: string | null) => {
-  if (!plan) return "未识别套餐";
-  const labels: Record<string, string> = {
-    free: "Free",
-    go: "Go",
-    plus: "Plus",
-    pro: "Pro",
-    prolite: "Pro Lite",
-    team: "Team",
-    business: "Business",
-    self_serve_business_prolite: "Business Pro Lite",
-    self_serve_business_usage_based: "Business（按量）",
-    enterprise: "Enterprise",
-    edu: "Edu",
-  };
-  return labels[plan.toLowerCase()] || plan;
-};
-const accountKindLabel = (account: Account) =>
-  account.actualKind === "personal"
-    ? "个人订阅"
-    : account.actualKind === "team"
-      ? "Team / Business 工作区"
-      : "待识别连接";
 const validationLabel = (account: Account) => {
   if (account.expectedKind === "any") return "未启用套餐类型校验";
   if (account.validationStatus === "pending")

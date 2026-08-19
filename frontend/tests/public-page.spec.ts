@@ -80,7 +80,7 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   await expect(page.getByText("最近更新", { exact: true })).toHaveCount(0);
   await expect(page.locator(".public-usage-card")).toHaveCount(1);
   await expect(page.locator(".public-connection")).toHaveCount(2);
-  await expect(page.locator(".public-limit")).toHaveCount(3);
+  await expect(page.locator(".usage-limit")).toHaveCount(3);
   await expect(page.getByText("t**t@e*****e.com")).toBeVisible();
   await expect(page.getByText("运行正常", { exact: true })).toBeVisible();
   await expect(page.getByText("数据可能已过期", { exact: true })).toBeVisible();
@@ -90,9 +90,9 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   const cardSpacing = await page
     .locator(".public-usage-card")
     .evaluate((card) => {
-      const header = card.querySelector(".public-card-header");
-      const connections = card.querySelector(".public-connections");
-      const heading = card.querySelector(".public-connection-heading");
+      const header = card.querySelector(".usage-card-header");
+      const connections = card.querySelector(".usage-connections");
+      const heading = card.querySelector(".usage-connection-heading");
       if (!header || !connections || !heading)
         throw new Error("卡片结构不完整");
       const headerRect = header.getBoundingClientRect();
@@ -185,7 +185,7 @@ test("公开页在宽屏中紧凑显示四张完整卡片", async ({ page }, tes
 
   const cards = page.locator(".public-usage-card");
   await expect(cards).toHaveCount(4);
-  await expect(cards.last().locator(".public-limit")).toHaveCount(3);
+  await expect(cards.last().locator(".usage-limit")).toHaveCount(3);
   const geometry = await cards.evaluateAll((elements) =>
     elements.map((element) => {
       const rect = element.getBoundingClientRect();
@@ -293,7 +293,7 @@ test("公开页常规卡片和页脚适配不同桌面可用高度", async ({ pa
 test("公开页额度百分数在不同密度下保持圆圈居中", async ({ page }, testInfo) => {
   await mockPublicPage(page);
   await page.goto("/");
-  const gauge = page.locator(".public-limit-gauge").first();
+  const gauge = page.locator(".usage-limit-gauge").first();
   await expect(gauge).toBeVisible();
 
   const viewports =
