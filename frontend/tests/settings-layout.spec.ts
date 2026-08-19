@@ -302,6 +302,8 @@ test("keeps primary page headings aligned across routes", async ({ page }) => {
 test("overview merges personal and Team connections for the same email", async ({
   page,
 }, testInfo) => {
+  if (testInfo.project.name === "desktop")
+    await page.setViewportSize({ width: 1920, height: 929 });
   const accounts = [
     responses.accounts[0],
     {
@@ -370,6 +372,7 @@ test("overview merges personal and Team connections for the same email", async (
   const cards = page.locator(".overview-card");
   await expect(cards).toHaveCount(2);
   const merged = cards.filter({ hasText: "t**t@e*****e.com" });
+  await expect(merged).toHaveClass(/overview-card-wide/);
   await expect(merged.locator(".overview-connection")).toHaveCount(2);
   await expect(merged.getByText("个人订阅", { exact: true })).toBeVisible();
   await expect(
@@ -399,19 +402,52 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(page.getByRole("button", { name: "立即刷新" })).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("test@example.com");
 
-  const geometry = await cards.first().evaluate((element) => ({
-    cardWidth: element.getBoundingClientRect().width,
-    gaugeSize: element
-      .querySelector(".usage-limit-gauge")
-      ?.getBoundingClientRect().width,
-    viewportWidth: document.documentElement.clientWidth,
-    documentWidth: document.documentElement.scrollWidth,
-  }));
+  const geometry = await merged.evaluate((element) => {
+    const title = element.querySelector(".usage-card-header h2");
+    const teamLimits = Array.from(
+      element.querySelectorAll(
+        ".overview-connection:nth-child(2) .usage-limit",
+      ),
+    );
+    const titleRect = title?.getBoundingClientRect();
+    const titleLineHeight = title
+      ? Number.parseFloat(getComputedStyle(title).lineHeight)
+      : 0;
+    return {
+      cardWidth: element.getBoundingClientRect().width,
+      gaugeSize: element
+        .querySelector(".usage-limit-gauge")
+        ?.getBoundingClientRect().width,
+      titleLines:
+        titleRect && titleLineHeight
+          ? Math.round(titleRect.height / titleLineHeight)
+          : 0,
+      teamLimitTops: teamLimits.map((limit) =>
+        Math.round(limit.getBoundingClientRect().top),
+      ),
+      viewportWidth: document.documentElement.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportHeight: document.documentElement.clientHeight,
+      documentHeight: document.documentElement.scrollHeight,
+    };
+  });
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
-  if (testInfo.project.name === "desktop")
-    expect(geometry.cardWidth).toBeLessThan(350);
   expect(geometry.gaugeSize).toBe(60);
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  if (testInfo.project.name === "desktop") {
+    const cardTops = await cards.evaluateAll((elements) =>
+      elements.map((element) =>
+        Math.round(element.getBoundingClientRect().top),
+      ),
+    );
+    expect(geometry.cardWidth).toBeGreaterThanOrEqual(600);
+    expect(new Set(cardTops).size).toBe(1);
+    expect(geometry.titleLines).toBe(1);
+    expect(new Set(geometry.teamLimitTops).size).toBe(1);
+    expect(geometry.documentHeight).toBeLessThanOrEqual(
+      geometry.viewportHeight,
+    );
+  }
 
   await merged
     .locator(".overview-connection", { hasText: "Team workspace" })
@@ -421,11 +457,11 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(page.locator(".account-select")).toHaveValue("2");
 });
 
-test("overview uses compact columns across desktop sizes", async ({
+test("overview uses adaptive account columns across desktop sizes", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop layout only");
-  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.setViewportSize({ width: 1024, height: 800 });
   const accounts = Array.from({ length: 4 }, (_, index) => ({
     ...responses.accounts[0],
     id: index + 1,
@@ -479,13 +515,33 @@ test("overview uses compact columns across desktop sizes", async ({
     }),
   );
   expect(
-    new Set(compactGeometry.slice(0, 3).map(({ top }) => Math.round(top))).size,
+    new Set(compactGeometry.slice(0, 2).map(({ top }) => Math.round(top))).size,
   ).toBe(1);
-  expect(Math.round(compactGeometry[3].top)).toBeGreaterThan(
+  expect(Math.round(compactGeometry[2].top)).toBeGreaterThan(
+    Math.round(compactGeometry[1].top),
+  );
+  expect(Math.round(compactGeometry[3].top)).toBe(
     Math.round(compactGeometry[2].top),
   );
   expect(
     Math.min(...compactGeometry.map(({ width }) => width)),
+  ).toBeGreaterThanOrEqual(280);
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const regularGeometry = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, width: rect.width };
+    }),
+  );
+  expect(
+    new Set(regularGeometry.slice(0, 3).map(({ top }) => Math.round(top))).size,
+  ).toBe(1);
+  expect(Math.round(regularGeometry[3].top)).toBeGreaterThan(
+    Math.round(regularGeometry[2].top),
+  );
+  expect(
+    Math.min(...regularGeometry.map(({ width }) => width)),
   ).toBeGreaterThanOrEqual(280);
 
   await page.setViewportSize({ width: 1920, height: 1080 });
@@ -498,7 +554,7 @@ test("overview uses compact columns across desktop sizes", async ({
   expect(new Set(wideGeometry.map(({ top }) => Math.round(top))).size).toBe(1);
   expect(
     Math.min(...wideGeometry.map(({ width }) => width)),
-  ).toBeGreaterThanOrEqual(320);
+  ).toBeGreaterThanOrEqual(280);
 });
 
 test("overview does not report a connection as healthy before its dashboard loads", async ({

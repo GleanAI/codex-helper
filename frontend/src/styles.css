@@ -350,6 +350,16 @@ header p {
   gap: 14px;
   align-items: start;
 }
+@media (min-width: 801px) {
+  .overview-connection .usage-limits {
+    grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+  }
+}
+@media (min-width: 900px) {
+  .overview-card-wide {
+    grid-column: span 2;
+  }
+}
 .balance {
   overflow: hidden;
 }

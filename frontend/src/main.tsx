@@ -476,7 +476,11 @@ function OverviewPage() {
       <div className="overview-grid">
         {groupAccounts(accounts).map((group) => (
           <UsageCard
-            className="overview-card"
+            className={
+              group.accounts.length > 1
+                ? "overview-card overview-card-wide"
+                : "overview-card"
+            }
             title={
               group.email
                 ? maskEmail(group.email)
