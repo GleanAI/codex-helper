@@ -290,6 +290,59 @@ test("公开页常规卡片和页脚适配不同桌面可用高度", async ({ pa
   }
 });
 
+test("公开页额度百分数在不同密度下保持圆圈居中", async ({ page }, testInfo) => {
+  await mockPublicPage(page);
+  await page.goto("/");
+  const gauge = page.locator(".public-limit-gauge").first();
+  await expect(gauge).toBeVisible();
+
+  const viewports =
+    testInfo.project.name === "desktop"
+      ? [
+          { width: 1280, height: 900, gaugeSize: 60 },
+          { width: 1280, height: 700, gaugeSize: 52 },
+          { width: 1280, height: 650, gaugeSize: 48 },
+        ]
+      : [
+          {
+            ...(page.viewportSize() ?? { width: 320, height: 640 }),
+            gaugeSize: 60,
+          },
+        ];
+
+  for (const { width, height, gaugeSize } of viewports) {
+    await page.setViewportSize({ width, height });
+    const geometry = await gauge.evaluate((element) => {
+      const number = element.querySelector("strong");
+      const unit = element.querySelector("span");
+      if (!number || !unit) throw new Error("额度百分数结构不完整");
+      const gaugeRect = element.getBoundingClientRect();
+      const numberRect = number.getBoundingClientRect();
+      const unitRect = unit.getBoundingClientRect();
+      return {
+        gaugeWidth: gaugeRect.width,
+        gaugeCenterX: gaugeRect.left + gaugeRect.width / 2,
+        gaugeCenterY: gaugeRect.top + gaugeRect.height / 2,
+        valueCenterX:
+          (Math.min(numberRect.left, unitRect.left) +
+            Math.max(numberRect.right, unitRect.right)) /
+          2,
+        valueCenterY:
+          (Math.min(numberRect.top, unitRect.top) +
+            Math.max(numberRect.bottom, unitRect.bottom)) /
+          2,
+      };
+    });
+    expect(geometry.gaugeWidth).toBe(gaugeSize);
+    expect(
+      Math.abs(geometry.valueCenterX - geometry.gaugeCenterX),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(geometry.valueCenterY - geometry.gaugeCenterY),
+    ).toBeLessThanOrEqual(1);
+  }
+});
+
 test("公开页在移动浏览器使用无横向溢出的完整单列卡片", async ({
   page,
 }, testInfo) => {

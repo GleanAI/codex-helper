@@ -1443,15 +1443,17 @@ a {
 .public-limit-gauge > div {
   width: 100%;
   height: 100%;
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  place-content: center;
   align-items: baseline;
-  justify-content: center;
-  padding-top: 15px;
   border-radius: 50%;
   background: var(--panel);
 }
 .public-limit-gauge strong {
   font-size: 19px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.04em;
 }
@@ -1459,6 +1461,7 @@ a {
   margin-left: 2px;
   color: var(--muted);
   font-size: 10px;
+  line-height: 1;
 }
 .public-limit-details {
   min-width: 0;
@@ -1628,9 +1631,6 @@ a {
     height: 52px;
     padding: 4px;
   }
-  .public-limit-gauge > div {
-    padding-top: 13px;
-  }
   .public-limit-gauge strong {
     font-size: 17px;
   }
@@ -1673,9 +1673,6 @@ a {
     width: 48px;
     height: 48px;
   }
-  .public-limit-gauge > div {
-    padding-top: 11px;
-  }
   .public-no-limits {
     margin-top: 5px;
     padding: 8px;
@@ -1715,9 +1712,6 @@ a {
   .public-limit-gauge {
     width: 60px;
     height: 60px;
-  }
-  .public-limit-gauge > div {
-    padding-top: 15px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
