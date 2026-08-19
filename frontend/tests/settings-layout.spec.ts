@@ -847,10 +847,14 @@ test("overview refreshes immediately after returning online", async ({
 test("keeps the account selector and icon-only refresh action compact", async ({
   page,
 }) => {
+  let releaseSync = () => undefined;
+  const syncGate = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
   await page.route("**/api/v1/**", async (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     if (key === "accounts/1/sync") {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await syncGate;
       return route.fulfill({ json: { ok: true } });
     }
     if (key === "dashboard")
@@ -906,6 +910,7 @@ test("keeps the account selector and icon-only refresh action compact", async ({
   const loading = page.getByRole("button", { name: "刷新中" });
   await expect(loading).toBeDisabled();
   await expect(loading.locator(".lucide-refresh-cw")).toHaveCount(1);
+  releaseSync();
   const done = page.getByRole("button", { name: "刷新完成" });
   await expect(done).toBeEnabled();
   await expect(done.locator(".lucide-check")).toHaveCount(1);
