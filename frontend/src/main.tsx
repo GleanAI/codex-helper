@@ -13,6 +13,7 @@ import {
   Bell,
   Check,
   Github,
+  LayoutDashboard,
   LogOut,
   Moon,
   MoreHorizontal,
@@ -45,6 +46,7 @@ import {
   type SMTPSettingsForm,
   type TelegramSettingsForm,
 } from "./types";
+import { groupAccounts } from "./overview";
 import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
@@ -251,8 +253,16 @@ function Shell({ version }: { version: string }) {
             aria-current={location.pathname === "/" ? "page" : undefined}
             onClick={() => nav("/")}
           >
-            <Activity />
+            <LayoutDashboard />
             总览
+          </button>
+          <button
+            className={location.pathname === "/details" ? "active" : ""}
+            aria-current={location.pathname === "/details" ? "page" : undefined}
+            onClick={() => nav("/details")}
+          >
+            <Activity />
+            详情
           </button>
           <button
             className={location.pathname === "/settings" ? "active" : ""}
@@ -310,7 +320,8 @@ function Shell({ version }: { version: string }) {
       </div>
       <section className="content">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<OverviewPage />} />
+          <Route path="/details" element={<DetailsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
@@ -321,8 +332,16 @@ function Shell({ version }: { version: string }) {
           aria-current={location.pathname === "/" ? "page" : undefined}
           onClick={() => nav("/")}
         >
-          <Activity />
+          <LayoutDashboard />
           <span>总览</span>
+        </button>
+        <button
+          className={location.pathname === "/details" ? "active" : ""}
+          aria-current={location.pathname === "/details" ? "page" : undefined}
+          onClick={() => nav("/details")}
+        >
+          <Activity />
+          <span>详情</span>
         </button>
         <button
           className={location.pathname === "/settings" ? "active" : ""}
@@ -340,7 +359,276 @@ function pageAvailable() {
   return document.visibilityState !== "hidden" && navigator.onLine;
 }
 
-function Dashboard() {
+function OverviewPage() {
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let stopped = false;
+    let running = false;
+    let refreshPending = false;
+    let controller: AbortController | null = null;
+    let timer = 0;
+    const poll = async () => {
+      if (stopped || running || !pageAvailable()) return;
+      running = true;
+      refreshPending = false;
+      controller = new AbortController();
+      const requestController = controller;
+      try {
+        const next = await getEventually(
+          "accounts",
+          decodeAccounts,
+          requestController.signal,
+        );
+        if (stopped) return;
+        setAccounts(next);
+        setError("");
+      } catch (requestError) {
+        if (!requestController.signal.aborted)
+          setError(toErrorMessage(requestError));
+      }
+      running = false;
+      if (controller === requestController) controller = null;
+      if (stopped || !pageAvailable()) return;
+      if (refreshPending) void poll();
+      else timer = window.setTimeout(poll, 30_000);
+    };
+    const availabilityChanged = () => {
+      window.clearTimeout(timer);
+      if (!pageAvailable()) {
+        refreshPending = false;
+        controller?.abort();
+        return;
+      }
+      if (running) {
+        refreshPending = true;
+        controller?.abort();
+      } else void poll();
+    };
+    window.addEventListener("online", availabilityChanged);
+    window.addEventListener("offline", availabilityChanged);
+    document.addEventListener("visibilitychange", availabilityChanged);
+    void poll();
+    return () => {
+      stopped = true;
+      controller?.abort();
+      window.clearTimeout(timer);
+      window.removeEventListener("online", availabilityChanged);
+      window.removeEventListener("offline", availabilityChanged);
+      document.removeEventListener("visibilitychange", availabilityChanged);
+    };
+  }, [retry]);
+
+  if (accounts === null)
+    return (
+      <>
+        <Header title="用量总览" />
+        {error ? (
+          <div className="panel empty">
+            <p className="error">{error}</p>
+            <button onClick={() => setRetry((value) => value + 1)}>重试</button>
+          </div>
+        ) : (
+          <Splash />
+        )}
+      </>
+    );
+  if (!accounts.length)
+    return (
+      <>
+        <Header title="用量总览" sub="请先在设置中心添加账号" />
+        <div className="panel empty">尚未添加 Codex 账号</div>
+      </>
+    );
+
+  return (
+    <>
+      <Header
+        title="用量总览"
+        sub="同一邮箱的个人订阅与 Team / Business 工作区合并展示"
+      />
+      {error && <div className="banner">{error}</div>}
+      <div className="overview-grid">
+        {groupAccounts(accounts).map((group) => (
+          <section className="panel overview-card" key={group.key}>
+            <div className="overview-card-header">
+              <div>
+                <small>账号</small>
+                <h2>
+                  {group.email
+                    ? maskEmail(group.email)
+                    : group.accounts[0].displayName}
+                </h2>
+              </div>
+              {!group.email && <span className="badge">邮箱待识别</span>}
+            </div>
+            <div className="overview-connections">
+              {group.accounts.map((account) => (
+                <OverviewConnection account={account} key={account.id} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function OverviewConnection({ account }: { account: Account }) {
+  const navigate = useNavigate();
+  const [dashboard, setDashboard] = useState<Dash | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let stopped = false;
+    let running = false;
+    let refreshPending = false;
+    let controller: AbortController | null = null;
+    let timer = 0;
+    const poll = async () => {
+      if (stopped || running || !pageAvailable()) return;
+      running = true;
+      refreshPending = false;
+      controller = new AbortController();
+      const requestController = controller;
+      try {
+        const next = await getEventually(
+          `dashboard?accountId=${account.id}`,
+          decodeDashboard,
+          requestController.signal,
+        );
+        if (stopped) return;
+        setDashboard(next);
+        setError("");
+      } catch (requestError) {
+        if (!requestController.signal.aborted)
+          setError(toErrorMessage(requestError));
+      }
+      running = false;
+      if (controller === requestController) controller = null;
+      if (stopped || !pageAvailable()) return;
+      if (refreshPending) void poll();
+      else timer = window.setTimeout(poll, 30_000);
+    };
+    const availabilityChanged = () => {
+      window.clearTimeout(timer);
+      if (!pageAvailable()) {
+        refreshPending = false;
+        controller?.abort();
+        return;
+      }
+      if (running) {
+        refreshPending = true;
+        controller?.abort();
+      } else void poll();
+    };
+    window.addEventListener("online", availabilityChanged);
+    window.addEventListener("offline", availabilityChanged);
+    document.addEventListener("visibilitychange", availabilityChanged);
+    void poll();
+    return () => {
+      stopped = true;
+      controller?.abort();
+      window.clearTimeout(timer);
+      window.removeEventListener("online", availabilityChanged);
+      window.removeEventListener("offline", availabilityChanged);
+      document.removeEventListener("visibilitychange", availabilityChanged);
+    };
+  }, [account.id]);
+
+  const status = !account.connected
+    ? "未连接"
+    : account.actualKind === "unknown"
+      ? "套餐待识别"
+      : dashboard?.stale
+        ? "数据可能已过期"
+        : "已连接";
+  const openDetails = () => {
+    localStorage.setItem("accountId", String(account.id));
+    navigate("/details");
+  };
+
+  return (
+    <article className="overview-connection">
+      <div className="overview-connection-header">
+        <div>
+          <small>{accountKindLabel(account)}</small>
+          <h3>{account.displayName}</h3>
+        </div>
+        <div className="overview-connection-actions">
+          <span className="badge">{planLabel(account.planType)}</span>
+          <button className="secondary" onClick={openDetails}>
+            查看详情
+          </button>
+        </div>
+      </div>
+      <div className="overview-status">
+        <span>{status}</span>
+        <span>
+          {dashboard?.fetchedAt
+            ? `更新于 ${new Date(dashboard.fetchedAt * 1000).toLocaleString()}`
+            : "尚未同步"}
+        </span>
+      </div>
+      {(error || dashboard?.lastError) && (
+        <div className="overview-warning">{error || dashboard?.lastError}</div>
+      )}
+      {!dashboard && !error ? (
+        <div className="overview-empty">正在读取限额…</div>
+      ) : dashboard?.limits.length ? (
+        <div className="overview-windows">
+          {dashboard.limits.map((limit) => (
+            <OverviewLimitWindow
+              key={`${limit.limitId}:${limit.windowType}`}
+              limit={limit}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="overview-empty">
+          {account.connected ? "暂无限额数据" : "登录后显示限额窗口"}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function OverviewLimitWindow({ limit }: { limit: Limit }) {
+  const used = Math.min(100, Math.max(0, limit.usedPercent));
+  const left = 100 - used;
+  const usedLabel = Math.round(used);
+  const leftLabel = Math.round(left);
+  const leftColor = `hsl(${left * 1.2} 70% 45%)`;
+  const windowLabel = limitWindowLabel(limit);
+  return (
+    <div className="overview-window">
+      <div className="overview-window-top">
+        <small>{windowLabel}</small>
+        <strong style={{ color: leftColor }}>{leftLabel}% 剩余</strong>
+      </div>
+      <div
+        className="bar"
+        aria-label={`${windowLabel}：已使用 ${usedLabel}%，剩余 ${leftLabel}%`}
+      >
+        <em style={{ width: left + "%", background: leftColor }} />
+        <i style={{ width: used + "%" }} />
+      </div>
+      <div className="overview-reset">
+        <span>下次重置</span>
+        <b>
+          {limit.resetsAt
+            ? new Date(limit.resetsAt * 1000).toLocaleString()
+            : "暂未提供"}
+        </b>
+        <span>{limit.resetsAt ? relative(limit.resetsAt) : ""}</span>
+      </div>
+    </div>
+  );
+}
+
+function DetailsPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null),
     [id, setId] = useState(+(localStorage.accountId || 0)),
     [d, setD] = useState<Dash | null>(null),
@@ -454,7 +742,7 @@ function Dashboard() {
   if (accounts === null)
     return (
       <>
-        <Header title="用量总览" />
+        <Header title="用量详情" />
         {e ? (
           <div className="panel empty">
             <p className="error">{e}</p>
@@ -468,14 +756,14 @@ function Dashboard() {
   if (!accounts.length)
     return (
       <>
-        <Header title="用量总览" sub="请先在设置中心添加账号" />
+        <Header title="用量详情" sub="请先在设置中心添加账号" />
         <div className="panel empty">尚未添加 Codex 账号</div>
       </>
     );
   if (!d)
     return (
       <>
-        <Header title="用量总览" />
+        <Header title="用量详情" />
         {e ? (
           <div className="panel empty">
             <p className="error">{e}</p>
@@ -494,7 +782,7 @@ function Dashboard() {
         : "立即刷新";
   return (
     <>
-      <Header title="用量总览">
+      <Header title="用量详情">
         <div className="header-actions">
           <select
             className="account-select"
@@ -1622,6 +1910,12 @@ const planLabel = (plan?: string | null) => {
   };
   return labels[plan.toLowerCase()] || plan;
 };
+const accountKindLabel = (account: Account) =>
+  account.actualKind === "personal"
+    ? "个人订阅"
+    : account.actualKind === "team"
+      ? "Team / Business 工作区"
+      : "待识别连接";
 const validationLabel = (account: Account) => {
   if (account.expectedKind === "any") return "未启用套餐类型校验";
   if (account.validationStatus === "pending")

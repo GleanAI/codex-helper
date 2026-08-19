@@ -202,13 +202,209 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
+test("overview merges personal and Team connections for the same email", async ({
+  page,
+}) => {
+  const accounts = [
+    responses.accounts[0],
+    {
+      ...responses.accounts[0],
+      id: 2,
+      displayName: "Team workspace",
+      planType: "business",
+      expectedKind: "team",
+      actualKind: "team",
+    },
+    {
+      ...responses.accounts[0],
+      id: 3,
+      displayName: "尚未登录",
+      email: null,
+      planType: null,
+      actualKind: "unknown",
+      validationStatus: "pending",
+      connected: false,
+    },
+  ];
+  await page.route("**/api/v1/**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const key = requestUrl.pathname.replace("/api/v1/", "");
+    if (key === "accounts") return route.fulfill({ json: accounts });
+    if (key === "dashboard") {
+      const accountId = Number(requestUrl.searchParams.get("accountId"));
+      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 1 : 0;
+      return route.fulfill({
+        json: {
+          accountId,
+          displayName: accounts[accountId - 1].displayName,
+          account: {
+            email: accounts[accountId - 1].email,
+            planType: accounts[accountId - 1].planType,
+            connected: accounts[accountId - 1].connected,
+          },
+          limits: Array.from({ length: limitCount }, (_, index) => ({
+            limitId: `limit-${index}`,
+            limitName: index ? "Review" : "Codex",
+            windowType: index ? "secondary" : "primary",
+            usedPercent: accountId === 1 ? 25 + index * 35 : 40,
+            windowDurationMinutes: index ? 43_200 : 10_080,
+            resetsAt: Math.floor(Date.now() / 1000) + 604_800,
+          })),
+          summary: {},
+          usage: [],
+          fetchedAt: Math.floor(Date.now() / 1000),
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  const cards = page.locator(".overview-card");
+  await expect(cards).toHaveCount(2);
+  const merged = cards.filter({ hasText: "t**t@e*****e.com" });
+  await expect(merged.locator(".overview-connection")).toHaveCount(2);
+  await expect(merged.getByText("个人订阅", { exact: true })).toBeVisible();
+  await expect(
+    merged.getByText("Team / Business 工作区", { exact: true }),
+  ).toBeVisible();
+  await expect(merged.locator(".overview-window")).toHaveCount(3);
+  await expect(merged.getByText("75% 剩余", { exact: true })).toBeVisible();
+  await expect(merged.getByText("下次重置").first()).toBeVisible();
+  await expect(page.getByText("邮箱待识别", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "立即刷新" })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("test@example.com");
+
+  const geometry = await cards.first().evaluate((element) => ({
+    cardWidth: element.getBoundingClientRect().width,
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+
+  await merged
+    .locator(".overview-connection", { hasText: "Team workspace" })
+    .getByRole("button", { name: "查看详情" })
+    .click();
+  await expect(page).toHaveURL(/\/details$/);
+  await expect(page.locator(".account-select")).toHaveValue("2");
+});
+
+test("overview keeps healthy connections visible when one dashboard fails", async ({
+  page,
+}) => {
+  const accounts = [
+    responses.accounts[0],
+    {
+      ...responses.accounts[0],
+      id: 2,
+      displayName: "失效连接",
+      email: "broken@example.com",
+    },
+  ];
+  await page.route("**/api/v1/**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const key = requestUrl.pathname.replace("/api/v1/", "");
+    if (key === "accounts") return route.fulfill({ json: accounts });
+    if (key === "dashboard") {
+      const accountId = Number(requestUrl.searchParams.get("accountId"));
+      if (accountId === 2)
+        return route.fulfill({ status: 404, json: { error: "账号不存在" } });
+      return route.fulfill({
+        json: {
+          accountId,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect(
+    page
+      .locator(".overview-card", { hasText: "t**t@e*****e.com" })
+      .getByText("暂无限额数据", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("账号不存在", { exact: true })).toBeVisible();
+  await expect(page.locator(".overview-card")).toHaveCount(2);
+});
+
+test("overview refreshes immediately after returning online", async ({
+  page,
+}) => {
+  let accountRequests = 0;
+  let dashboardRequests = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "accounts") {
+      accountRequests += 1;
+      return route.fulfill({ json: responses.accounts });
+    }
+    if (key === "dashboard") {
+      dashboardRequests += 1;
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".overview-connection")).toHaveCount(1);
+  await expect.poll(() => dashboardRequests).toBe(1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: false,
+    });
+    window.dispatchEvent(new Event("offline"));
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: true,
+    });
+    window.dispatchEvent(new Event("online"));
+  });
+
+  await expect.poll(() => accountRequests, { timeout: 2_000 }).toBe(2);
+  await expect.poll(() => dashboardRequests, { timeout: 2_000 }).toBe(2);
+});
+
 test("keeps the account selector and icon-only refresh action compact", async ({
   page,
 }) => {
   await page.route("**/api/v1/**", async (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     if (key === "accounts/1/sync") {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       return route.fulfill({ json: { ok: true } });
     }
     if (key === "dashboard")
@@ -231,7 +427,7 @@ test("keeps the account selector and icon-only refresh action compact", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   const actions = page.locator(".header-actions");
   const selector = page.locator(".account-select");
   const refresh = page.getByRole("button", { name: "立即刷新" });
@@ -300,7 +496,7 @@ test("shows history days matching the daily buckets without a pointer focus outl
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   await expect(page.locator(".stat small")).toContainText([
     "累计 Tokens",
     "单日峰值 Tokens",
@@ -339,7 +535,7 @@ test("shows zero history days when daily usage is empty", async ({ page }) => {
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   await expect(page.locator(".stat", { hasText: "历史天数" })).toContainText(
     "0 天",
   );
@@ -380,7 +576,7 @@ test("keeps daily Token axis labels visible on narrow screens", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   const chart = page.locator(".chart");
   await expect(
     chart.getByRole("heading", { name: "每日 Token 趋势" }),
@@ -714,7 +910,7 @@ test("groups account metadata and multiple windows in one balance panel", async 
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   const balance = page.locator(".balance");
   await expect(page.getByText("Codex Account", { exact: true })).toHaveCount(0);
   await expect(balance.locator(".badge")).toHaveText("Plus");
@@ -791,7 +987,7 @@ test("silently retries a transient dashboard read failure", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   await expect.poll(() => dashboardRequests).toBe(1);
   await expect(page.locator(".banner")).toHaveCount(0);
   await expect(page.locator(".account-select")).toBeVisible();
@@ -833,7 +1029,7 @@ test("Codex account emails are masked everywhere they are displayed", async ({
     return route.fulfill({ json: responses[key] ?? {} });
   });
 
-  await page.goto("/");
+  await page.goto("/details");
   await expect(page.locator(".account-select")).toContainText(
     "t**t@e*****e.com",
   );
@@ -875,7 +1071,7 @@ test("returns to login when an authenticated request receives 401", async ({
       });
     return route.fulfill({ json: responses[key] ?? {} });
   });
-  await page.goto("/");
+  await page.goto("/details");
   await expect(page.locator(".account-select")).toBeVisible();
   await page.getByRole("button", { name: "立即刷新" }).click();
   await expect(page.getByRole("heading", { name: "欢迎回来" })).toBeVisible();
@@ -920,7 +1116,7 @@ test("a slow previous account response cannot replace the selected account", asy
     }
     return route.fulfill({ json: responses[key] ?? {} });
   });
-  await page.goto("/");
+  await page.goto("/details");
   const selector = page.locator(".account-select");
   await selector.selectOption("2");
   await expect(page.locator(".balance .badge")).toHaveText("Pro");
