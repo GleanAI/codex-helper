@@ -202,6 +202,51 @@ test("mobile shell exposes accessible navigation without covering content", asyn
   await expect(page).toHaveURL(/\/$/);
 });
 
+test("keeps primary page headings aligned across routes", async ({ page }) => {
+  await page.route("**/api/v1/**", async (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "dashboard")
+      return route.fulfill({
+        json: {
+          accountId: 1,
+          displayName: "默认账号",
+          account: {
+            email: "test@example.com",
+            planType: "plus",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  const headingPosition = async (name: string) =>
+    page.getByRole("heading", { name, exact: true }).evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { x: rect.x, y: rect.y };
+    });
+
+  await page.goto("/");
+  await expect(page.locator(".overview-card")).toBeVisible();
+  const overview = await headingPosition("用量总览");
+
+  await page.goto("/details");
+  await expect(page.locator(".balance")).toBeVisible();
+  const details = await headingPosition("用量详情");
+
+  await page.goto("/settings");
+  await expect(page.locator(".settings-loading")).toHaveCount(0);
+  const settings = await headingPosition("设置中心");
+
+  expect(details).toEqual(overview);
+  expect(settings).toEqual(overview);
+});
+
 test("overview merges personal and Team connections for the same email", async ({
   page,
 }, testInfo) => {

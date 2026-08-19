@@ -273,11 +273,11 @@ aside nav button.active,
   padding: 42px;
   max-width: 1500px;
   width: 100%;
-  margin: auto;
+  margin: 0 auto;
 }
 header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   margin-bottom: 28px;
 }
