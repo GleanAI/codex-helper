@@ -204,7 +204,7 @@ test("mobile shell exposes accessible navigation without covering content", asyn
 
 test("overview merges personal and Team connections for the same email", async ({
   page,
-}) => {
+}, testInfo) => {
   const accounts = [
     responses.accounts[0],
     {
@@ -306,6 +306,8 @@ test("overview merges personal and Team connections for the same email", async (
     documentWidth: document.documentElement.scrollWidth,
   }));
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  if (testInfo.project.name === "desktop")
+    expect(geometry.cardWidth).toBeLessThan(350);
   expect(geometry.progressHeight).toBe(6);
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
 
@@ -317,11 +319,11 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(page.locator(".account-select")).toHaveValue("2");
 });
 
-test("overview uses four compact columns on a wide desktop", async ({
+test("overview uses compact columns across desktop sizes", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop layout only");
-  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   const accounts = Array.from({ length: 4 }, (_, index) => ({
     ...responses.accounts[0],
     id: index + 1,
@@ -370,15 +372,32 @@ test("overview uses four compact columns on a wide desktop", async ({
   await expect(
     cards.first().locator(".overview-status-dot.healthy"),
   ).toBeVisible();
-  const geometry = await cards.evaluateAll((elements) =>
+  const compactGeometry = await cards.evaluateAll((elements) =>
     elements.map((element) => {
       const rect = element.getBoundingClientRect();
       return { top: rect.top, width: rect.width };
     }),
   );
-  expect(new Set(geometry.map(({ top }) => Math.round(top))).size).toBe(1);
   expect(
-    Math.min(...geometry.map(({ width }) => width)),
+    new Set(compactGeometry.slice(0, 3).map(({ top }) => Math.round(top))).size,
+  ).toBe(1);
+  expect(Math.round(compactGeometry[3].top)).toBeGreaterThan(
+    Math.round(compactGeometry[2].top),
+  );
+  expect(
+    Math.min(...compactGeometry.map(({ width }) => width)),
+  ).toBeGreaterThanOrEqual(280);
+
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const wideGeometry = await cards.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, width: rect.width };
+    }),
+  );
+  expect(new Set(wideGeometry.map(({ top }) => Math.round(top))).size).toBe(1);
+  expect(
+    Math.min(...wideGeometry.map(({ width }) => width)),
   ).toBeGreaterThanOrEqual(320);
 });
 
