@@ -54,6 +54,66 @@ func TestAccountsAndPerAccountUsage(t *testing.T) {
 	}
 }
 
+func TestDailyUsageUpsertAndRange(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	second, err := s.CreateAccount("Team workspace", "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpsertDailyUsage(1, []DailyUsage{
+		{Date: "2026-08-16", TotalTokens: 100},
+		{Date: "2026-08-17", TotalTokens: 200},
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpsertDailyUsage(1, []DailyUsage{{Date: "2026-08-17", TotalTokens: 250}}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpsertDailyUsage(second.ID, []DailyUsage{{Date: "2026-08-17", TotalTokens: 999}}, 2); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := s.DailyUsage(1, "2026-08-17", "2026-08-18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 1 || usage[0].Date != "2026-08-17" || usage[0].TotalTokens != 250 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if err = s.DeleteDailyUsage(1); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = s.DailyUsage(1, "2026-08-16", "2026-08-18")
+	if err != nil || len(usage) != 0 {
+		t.Fatalf("deleted account usage = %#v, %v", usage, err)
+	}
+	usage, err = s.DailyUsage(second.ID, "2026-08-16", "2026-08-18")
+	if err != nil || len(usage) != 1 || usage[0].TotalTokens != 999 {
+		t.Fatalf("other account usage = %#v, %v", usage, err)
+	}
+	email, plan := "team@example.com", "team"
+	if err = s.UpdateAccount(second.ID, &email, &plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DisconnectAccount(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = s.DailyUsage(second.ID, "2026-08-16", "2026-08-18")
+	if err != nil || len(usage) != 0 {
+		t.Fatalf("disconnected account usage = %#v, %v", usage, err)
+	}
+	accounts, err := s.Accounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accounts[1].Connected || accounts[1].Email != nil || accounts[1].PlanType != nil {
+		t.Fatalf("disconnected account = %#v", accounts[1])
+	}
+}
+
 func TestAccountKindAndValidation(t *testing.T) {
 	tests := []struct{ plan, kind string }{
 		{"plus", "personal"}, {"Pro", "personal"}, {"team", "team"},

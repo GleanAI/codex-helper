@@ -15,6 +15,11 @@ import (
 
 type Store struct{ DB *sql.DB }
 
+type DailyUsage struct {
+	Date        string
+	TotalTokens int64
+}
+
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
@@ -343,6 +348,68 @@ func (s *Store) GetJSON(key string, v any) bool {
 	return ok && json.Unmarshal([]byte(raw), v) == nil
 }
 func (s *Store) Initialized() bool { _, ok := s.Get("initialized"); return ok }
+
+func (s *Store) UpsertDailyUsage(accountID int64, usage []DailyUsage, fetchedAt int64) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, point := range usage {
+		if _, err = tx.Exec(`INSERT INTO daily_usage(account_id,date,total_tokens,fetched_at)
+			VALUES(?,?,?,?) ON CONFLICT(account_id,date) DO UPDATE SET
+			total_tokens=excluded.total_tokens,fetched_at=excluded.fetched_at`,
+			accountID, point.Date, point.TotalTokens, fetchedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DailyUsage(accountID int64, fromDate, throughDate string) ([]DailyUsage, error) {
+	rows, err := s.DB.Query(`SELECT date,total_tokens FROM daily_usage
+		WHERE account_id=? AND date>=? AND date<=? ORDER BY date`, accountID, fromDate, throughDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	usage := []DailyUsage{}
+	for rows.Next() {
+		var point DailyUsage
+		if err = rows.Scan(&point.Date, &point.TotalTokens); err != nil {
+			return nil, err
+		}
+		usage = append(usage, point)
+	}
+	return usage, rows.Err()
+}
+
+func (s *Store) DeleteDailyUsage(accountID int64) error {
+	_, err := s.DB.Exec("DELETE FROM daily_usage WHERE account_id=?", accountID)
+	return err
+}
+
+func (s *Store) DisconnectAccount(accountID int64) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM daily_usage WHERE account_id=?", accountID); err != nil {
+		return err
+	}
+	result, err := tx.Exec("UPDATE accounts SET email=NULL,plan_type=NULL,connected=0,updated_at=? WHERE id=?", time.Now().Unix(), accountID)
+	if err != nil {
+		return err
+	}
+	if affected, affectedErr := result.RowsAffected(); affectedErr != nil {
+		return affectedErr
+	} else if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Cleanup(days int) (int64, error) {
 	cutoff := time.Now().AddDate(0, 0, -days).Unix()
 	var n int64

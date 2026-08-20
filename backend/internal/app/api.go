@@ -243,8 +243,18 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 			e = rt.client.Call(r.Context(), "account/logout", map[string]any{}, &out)
 		}
 		if e == nil {
-			_ = a.store.UpdateAccount(id, nil, nil, false)
-			jsonOut(w, 200, map[string]bool{"ok": true})
+			e = a.store.DisconnectAccount(id)
+			if e == nil {
+				rt.syncing.Lock()
+				rt.dash.Account = AccountView{Connected: false}
+				rt.dash.Limits = []LimitBucket{}
+				rt.dash.MonthlyCreditLimit = nil
+				rt.dash.Summary = UsageSummary{}
+				rt.dash.Usage = []UsagePoint{}
+				rt.dash.FetchedAt = time.Now().Unix()
+				rt.syncing.Unlock()
+				jsonOut(w, 200, map[string]bool{"ok": true})
+			}
 		}
 	case action == "sync" && r.Method == "POST":
 		e = a.syncAccount(r.Context(), id)
@@ -487,10 +497,12 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 		return e
 	}
 	name := "账号"
+	var previousEmail *string
 	accounts, _ := a.store.Accounts()
 	for _, x := range accounts {
 		if x.ID == id {
 			name = x.DisplayName
+			previousEmail = x.Email
 			break
 		}
 	}
@@ -499,6 +511,17 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 		d.Account.Email = ar.Account.Email
 		d.Account.PlanType = ar.Account.PlanType
 		d.Account.AuthMode = &ar.Account.Type
+	}
+	if previousEmail == nil {
+		previousEmail = rt.dash.Account.Email
+	}
+	if usageIdentityChanged(previousEmail, d.Account.Email) {
+		if err := a.store.DeleteDailyUsage(id); err != nil {
+			return err
+		}
+	}
+	if d.Account.Connected && rt.dash.Account.Connected && d.Account.Email != nil && rt.dash.Account.Email != nil && strings.EqualFold(*d.Account.Email, *rt.dash.Account.Email) {
+		d.Summary = rt.dash.Summary
 	}
 	var lr struct {
 		RateLimits *rawLimit           `json:"rateLimits"`
@@ -541,11 +564,26 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 	}
 	if e := rt.client.Call(ctx, "account/usage/read", map[string]any{}, &ur); e == nil {
 		d.Summary = ur.Summary
-		for _, x := range ur.Daily {
-			p := UsagePoint{Date: x.StartDate, TotalTokens: x.Tokens}
-			d.Usage = append(d.Usage, p)
-			_, _ = a.store.DB.Exec("INSERT INTO daily_usage(account_id,date,total_tokens,fetched_at) VALUES(?,?,?,?) ON CONFLICT(account_id,date) DO UPDATE SET total_tokens=excluded.total_tokens,fetched_at=excluded.fetched_at", id, x.StartDate, x.Tokens, d.FetchedAt)
+		usage := make([]store.DailyUsage, 0, len(ur.Daily))
+		location, locationErr := time.LoadLocation(a.general().Timezone)
+		if locationErr != nil {
+			location = time.UTC
 		}
+		for _, x := range ur.Daily {
+			parsed, parseErr := time.ParseInLocation("2006-01-02", x.StartDate, location)
+			if parseErr != nil || parsed.Format("2006-01-02") != x.StartDate || x.Tokens < 0 {
+				continue
+			}
+			usage = append(usage, store.DailyUsage{Date: x.StartDate, TotalTokens: x.Tokens})
+		}
+		if e = a.store.UpsertDailyUsage(id, usage, d.FetchedAt); e != nil {
+			return e
+		}
+	}
+	var e error
+	d.Usage, e = a.dailyUsageHistory(id, time.Now())
+	if e != nil {
+		return e
 	}
 	resetDetected, e := a.storeLimitSnapshots(d)
 	if e != nil {
@@ -557,6 +595,46 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 		go a.processReminders()
 	}
 	return nil
+}
+
+func usageIdentityChanged(previous, current *string) bool {
+	return previous == nil || current == nil || !strings.EqualFold(strings.TrimSpace(*previous), strings.TrimSpace(*current))
+}
+
+func (a *App) dailyUsageHistory(accountID int64, now time.Time) ([]UsagePoint, error) {
+	g := a.general()
+	location, err := time.LoadLocation(g.Timezone)
+	if err != nil {
+		location = time.UTC
+	}
+	today := now.In(location)
+	today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, location)
+	cutoff := today.AddDate(0, 0, -(g.RetentionDays - 1))
+	stored, err := a.store.DailyUsage(accountID, cutoff.Format("2006-01-02"), today.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	byDate := make(map[string]int64, len(stored))
+	var first time.Time
+	for _, point := range stored {
+		date, parseErr := time.ParseInLocation("2006-01-02", point.Date, location)
+		if parseErr != nil || date.Format("2006-01-02") != point.Date || point.TotalTokens < 0 {
+			continue
+		}
+		if first.IsZero() {
+			first = date
+		}
+		byDate[point.Date] = point.TotalTokens
+	}
+	if first.IsZero() {
+		return []UsagePoint{}, nil
+	}
+	usage := make([]UsagePoint, 0, int(today.Sub(first).Hours()/24)+1)
+	for date := first; !date.After(today); date = date.AddDate(0, 0, 1) {
+		key := date.Format("2006-01-02")
+		usage = append(usage, UsagePoint{Date: key, TotalTokens: byDate[key]})
+	}
+	return usage, nil
 }
 
 const resetDropTolerance = 0.01

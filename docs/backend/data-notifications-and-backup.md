@@ -7,7 +7,7 @@
 - `settings` 保存通用、SMTP、Telegram、绑定码及安装标记；秘密单独以密文 key 保存。
 - `admin` 与 `sessions` 保存唯一管理员和登录会话。
 - `accounts` 保存 Codex 连接元数据与期望套餐类型。
-- `daily_usage` 和 `limit_snapshots` 按 `account_id` 保存历史，删除账号时级联删除。
+- `daily_usage` 和 `limit_snapshots` 按 `account_id` 保存历史，删除账号时级联删除。同步返回的官方日桶以账号和日期为键合并；用于连续图表的零值日期只在读取时生成，不写入数据库。`daily_usage` 是可从官方源恢复的缓存，账号槽位退出登录、身份未知或换绑到不同邮箱时只清除该槽位的记录，避免跨身份展示。
 - `notifications` 保存稳定去重键、调度时间、结构化消息、状态、次数和错误。
 - `telegram_updates` 保存 Bot API offset。
 

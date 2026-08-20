@@ -82,9 +82,9 @@
 | `PUT /api/v1/accounts/{id}` | body `{displayName,expectedKind?}`；名称不能为空，省略类型时保留旧值；成功时同时更新内存 Dashboard 中的显示名，并返回 `200 {ok:true}`。 |
 | `DELETE /api/v1/accounts/{id}` | 停止该账号进程，删除账号及级联历史，再删除对应凭据目录；成功返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/login/device` | 启动并初始化 app-server，调用 `account/login/start` 的 `chatgptDeviceCode` 流程；返回含 `verificationUrl`、`userCode` 和 `loginId` 的结果。 |
-| `POST /api/v1/accounts/{id}/logout` | 调用 `account/logout` 并将连接状态置为 false；返回 `200 {ok:true}`。 |
+| `POST /api/v1/accounts/{id}/logout` | 调用 `account/logout`，清除该槽位可从官方源恢复的每日用量缓存，并将连接状态置为 false；返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/sync` | 同步指定账号；成功 `200 {ok:true}`，上游失败 502。 |
-| `任意方法 /api/v1/dashboard?accountId={id}` | 返回内存中的 `Dashboard`；非 `GET`/`HEAD` 还需来源头。省略或无效的零值 ID 使用账号 1，前端使用 `GET`。 |
+| `任意方法 /api/v1/dashboard?accountId={id}` | 返回内存中的 `Dashboard`；非 `GET`/`HEAD` 还需来源头。省略或无效的零值 ID 使用账号 1，前端使用 `GET`。`usage` 按日期升序，从保留期内首个已保存官方日桶连续到配置时区的今天，缺失日期返回 `totalTokens:0`；没有官方日桶时返回空数组。 |
 | `POST /api/v1/sync?accountId={id}` | 旧兼容入口，同步指定账号；省略或零值 ID 使用账号 1。 |
 
 账号不存在返回 404 `账号不存在`；非法路径 ID 返回 400 `账号 ID 无效`；无效 `expectedKind` 返回 400 `连接类型无效`。未知账号套餐不得猜测为个人或团队。
@@ -100,6 +100,8 @@
 ```
 
 任意非 `GET` 方法都按更新处理，前端使用 `PUT`；请求接受完整对象。`syncMinutes` 为 1–60，`retentionDays` 为 30–365，`beforeMinutes` 为 1–1440，时区必须能由 Go 加载；非法值返回 400。成功返回保存后的对象。
+
+`syncMinutes` 同时控制限额、累计 Token、单日峰值、最长任务时长和每日 Token 桶的后台读取频率，默认值为 5。手动账号同步不受该间隔限制。该设置不保证上游账号级摘要或日桶在每次读取时都会变化。
 
 ### SMTP
 
