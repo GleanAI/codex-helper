@@ -20,6 +20,7 @@ import (
 type notificationEvent struct {
 	Version      int     `json:"version"`
 	Kind         string  `json:"kind"`
+	Confirmed    bool    `json:"confirmed,omitempty"`
 	Account      string  `json:"account"`
 	DurationMins int     `json:"durationMinutes"`
 	Remaining    float64 `json:"remainingPercent"`
@@ -474,7 +475,6 @@ func num(n *int64) string {
 }
 func (a *App) processReminders() {
 	a.reminderMu.Lock()
-	defer a.reminderMu.Unlock()
 	g := a.general()
 	a.mu.RLock()
 	ds := make([]Dashboard, 0, len(a.runtimes))
@@ -487,29 +487,25 @@ func (a *App) processReminders() {
 	now := time.Now()
 	for _, d := range ds {
 		for _, x := range d.Limits {
-			for _, kind := range []string{"before", "after"} {
-				if kind == "before" && !g.NotifyBefore {
-					continue
-				}
-				if kind == "after" && !g.NotifyAfter {
-					continue
-				}
-				at := time.Unix(x.ResetsAt, 0)
-				if kind == "before" {
-					at = at.Add(-time.Duration(g.BeforeMinutes) * time.Minute)
-				}
-				if now.Before(at) || now.Sub(at) > 6*time.Hour {
-					continue
-				}
-				key := fmt.Sprintf("%d:%s:%s:%d:%s", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt, kind)
-				event := notificationEvent{Version: 1, Kind: kind, Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
-				body, _ := json.Marshal(event)
-				_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
-					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-					VALUES(?,?,?,'pending',0,'',?,NULL,?)`, key, "configured", kind, at.Unix(), string(body))
+			if !g.NotifyBefore || x.ResetsAt <= now.Unix() {
+				continue
 			}
+			at := time.Unix(x.ResetsAt, 0).Add(-time.Duration(g.BeforeMinutes) * time.Minute)
+			if now.Before(at) || now.Sub(at) > 6*time.Hour {
+				continue
+			}
+			key := fmt.Sprintf("%d:%s:%s:%d:before", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt)
+			event := notificationEvent{Version: 1, Kind: "before", Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
+			body, _ := json.Marshal(event)
+			_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
+					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
+					VALUES(?,?,'before','pending',0,'',?,NULL,?)`, key, "configured", at.Unix(), string(body))
 		}
 	}
+	a.reminderMu.Unlock()
+
+	a.reminderSendMu.Lock()
+	defer a.reminderSendMu.Unlock()
 	a.sendPendingReminders(now)
 }
 
@@ -519,7 +515,7 @@ func (a *App) sendPendingReminders(now time.Time) {
 		body string
 	}
 	rows, err := a.store.DB.Query(`SELECT dedupe_key,body FROM notifications
-		WHERE status!='sent' AND scheduled_at<=? AND scheduled_at>=? ORDER BY scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
+		WHERE status IN ('pending','failed') AND scheduled_at<=? AND scheduled_at>=? ORDER BY scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
 	if err != nil {
 		return
 	}
@@ -533,6 +529,11 @@ func (a *App) sendPendingReminders(now time.Time) {
 	_ = rows.Close()
 	for _, p := range pending {
 		event, structured := decodeNotification(p.body)
+		if structured && ((event.Kind == "before" && event.ResetsAt <= now.Unix()) ||
+			((event.Kind == "after" || event.Kind == "detected_after") && !event.Confirmed)) {
+			_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, p.key)
+			continue
+		}
 		textBody, telegramBody, subject, htmlBody := renderNotification(event, p.body, a.general().Timezone, now)
 		ok := true
 		errs := []string{}
@@ -627,16 +628,12 @@ func renderNotification(event notificationEvent, legacy, zone string, now time.T
 		escaped := html.EscapeString(legacy)
 		return legacy, escaped, "Codex 额度重置提醒", emailCard("额度重置提醒", escaped, "", zone, "#2563eb")
 	}
-	after := event.Kind == "after" || event.Kind == "detected_after" || (event.Kind == "before" && event.ResetsAt <= now.Unix())
+	after := event.Kind == "after" || event.Kind == "detected_after"
 	title, icon, color := "Codex 即将重置", "⏰", "#2563eb"
 	detail := fmt.Sprintf("剩余 %.1f%%", event.Remaining)
 	if after {
 		title, icon, color = "Codex 额度已重置", "✅", "#059669"
-		if event.Kind == "detected_after" {
-			detail = fmt.Sprintf("已用 %.1f%% → %.1f%%", event.PreviousUsed, event.Used)
-		} else {
-			detail = fmt.Sprintf("当前已用 %.1f%%", event.Used)
-		}
+		detail = fmt.Sprintf("当前额度剩余 %.1f%%", event.Remaining)
 	}
 	when := formatTime(event.ResetsAt, zone)
 	relative := relativeTime(event.ResetsAt, now)

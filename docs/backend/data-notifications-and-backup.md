@@ -21,7 +21,9 @@
 
 ## 提醒生成与重试
 
-限额快照按 `(account_id, limit_id, window_type)` 比较。计划提醒的 key 还包含 `resets_at` 和 `before|after`；异常提前重置以旧快照 ID 生成 `detected_after` key。百分比回落必须超过 `0.01`，旧快照不得超过六小时。
+限额快照按 `(account_id, limit_id, window_type)` 比较。重置前提醒的 key 包含旧周期的 `resets_at` 和 `before`。重置后确认不再仅凭本地时钟到点生成：正常重置必须在旧重置时间后的六小时内看到上游 `resets_at` 推进到未来的新周期，再以旧周期时间生成 `after` key；异常提前重置以六小时内旧快照的 ID 生成 `detected_after` key，且百分比回落必须超过 `0.01`。过期的重置前提醒和无法证明已确认的旧版重置后记录不会发送。
+
+确认事件保存新快照中的剩余比例和下一次重置时间。同步先提交快照并发布内存 Dashboard，再异步处理通知，因此管理端、公开页、Telegram 查询、自动 Telegram 提醒和 SMTP 邮件共享同一份已确认数据。重置后消息统一显示“当前额度剩余”，其中“下次重置”及相对时间均根据新周期计算。
 
 处理器每分钟为当前 Dashboard 生成到期提醒，并只发送 `scheduled_at` 后六小时内的未发送记录。Telegram 与 SMTP 中任何启用渠道失败都会把记录标记为 failed，后续周期在窗口内重试；全部启用渠道成功才标记 sent。稳定 key 和 `INSERT OR IGNORE` 是防重复边界。
 

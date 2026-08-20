@@ -379,10 +379,10 @@ func notificationCount(t *testing.T, a *App) int {
 func TestStoreLimitSnapshotsDetectsEarlyReset(t *testing.T) {
 	a := newReminderTestApp(t)
 	now := time.Now().Unix()
-	if detected, err := a.storeLimitSnapshots(reminderDashboard(now, 42, now+3600)); err != nil || detected {
+	if detected, err := a.storeLimitSnapshots(reminderDashboard(now, 42, now+3600)); err != nil || len(detected) != 0 {
 		t.Fatalf("initial snapshot: detected=%v err=%v", detected, err)
 	}
-	if detected, err := a.storeLimitSnapshots(reminderDashboard(now+60, 3, now+7200)); err != nil || !detected {
+	if detected, err := a.storeLimitSnapshots(reminderDashboard(now+60, 3, now+7200)); err != nil || len(detected) == 0 {
 		t.Fatalf("reset snapshot: detected=%v err=%v", detected, err)
 	}
 	var kind, body string
@@ -390,8 +390,38 @@ func TestStoreLimitSnapshotsDetectsEarlyReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	event, ok := decodeNotification(body)
-	if kind != "detected_after" || !ok || event.PreviousUsed != 42 || event.Used != 3 || event.Account != "测试账号" {
+	if kind != "detected_after" || !ok || !event.Confirmed || event.PreviousUsed != 42 || event.Used != 3 || event.Account != "测试账号" {
 		t.Fatalf("notification kind=%q body=%q", kind, body)
+	}
+}
+
+func TestStoreLimitSnapshotsConfirmsScheduledResetFromAdvancedWindow(t *testing.T) {
+	a := newReminderTestApp(t)
+	oldReset := time.Now().Unix()
+	if detected, err := a.storeLimitSnapshots(reminderDashboard(oldReset-60, 0, oldReset)); err != nil || len(detected) != 0 {
+		t.Fatalf("initial snapshot: detected=%v err=%v", detected, err)
+	}
+	newReset := oldReset + int64((7 * 24 * time.Hour).Seconds())
+	if detected, err := a.storeLimitSnapshots(reminderDashboard(oldReset+60, 0, newReset)); err != nil || len(detected) == 0 {
+		t.Fatalf("advanced window: detected=%v err=%v", detected, err)
+	}
+	var kind, body string
+	if err := a.store.DB.QueryRow("SELECT kind,body FROM notifications").Scan(&kind, &body); err != nil {
+		t.Fatal(err)
+	}
+	event, ok := decodeNotification(body)
+	if kind != "after" || !ok || !event.Confirmed || event.Remaining != 100 || event.ResetsAt != newReset {
+		t.Fatalf("notification kind=%q event=%#v body=%q", kind, event, body)
+	}
+}
+
+func TestStoreLimitSnapshotsDoesNotConfirmScheduledResetBeforeWindowAdvances(t *testing.T) {
+	a := newReminderTestApp(t)
+	oldReset := time.Now().Unix()
+	_, _ = a.storeLimitSnapshots(reminderDashboard(oldReset-60, 100, oldReset))
+	detected, err := a.storeLimitSnapshots(reminderDashboard(oldReset+60, 0, oldReset))
+	if err != nil || len(detected) != 0 || notificationCount(t, a) != 0 {
+		t.Fatalf("detected=%v notifications=%d err=%v", detected, notificationCount(t, a), err)
 	}
 }
 
@@ -419,6 +449,142 @@ func TestNotificationFormatting(t *testing.T) {
 	}
 }
 
+func TestConfirmedResetNotificationUsesRemainingAndNextReset(t *testing.T) {
+	now := time.Date(2026, 8, 20, 3, 51, 0, 0, time.UTC)
+	nextReset := now.Add(7 * 24 * time.Hour)
+	event := notificationEvent{Version: 1, Kind: "after", Confirmed: true, Account: "GPT Plus", DurationMins: 10080, Remaining: 100, Used: 0, ResetsAt: nextReset.Unix()}
+	plain, telegram, subject, email := renderNotification(event, "", "Asia/Shanghai", now)
+	for name, value := range map[string]string{"plain": plain, "telegram": telegram, "email": email} {
+		if !strings.Contains(value, "当前额度剩余 100.0%") || !strings.Contains(value, "8月27日 周四 11:51") || !strings.Contains(value, "还有 7 天 0 小时") {
+			t.Fatalf("%s did not contain confirmed reset values: %q", name, value)
+		}
+		if strings.Contains(value, "当前已用 100.0%") || strings.Contains(value, "刚刚重置") || strings.Contains(value, "8月20日 周四 11:51") {
+			t.Fatalf("%s contained stale reset values: %q", name, value)
+		}
+	}
+	if subject != "Codex 额度已重置" {
+		t.Fatalf("subject = %q", subject)
+	}
+}
+
+func TestSendPendingRemindersExpiresUnconfirmedAndLateNotifications(t *testing.T) {
+	a := newReminderTestApp(t)
+	now := time.Now()
+	events := map[string]notificationEvent{
+		"old-after":   {Version: 1, Kind: "after", Account: "旧记录", ResetsAt: now.Add(time.Hour).Unix()},
+		"late-before": {Version: 1, Kind: "before", Account: "迟到提醒", ResetsAt: now.Add(-time.Minute).Unix()},
+	}
+	for key, event := range events {
+		body, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = a.store.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
+			VALUES(?, 'configured', ?, 'pending', 0, '', ?, NULL, ?)`, key, event.Kind, now.Unix(), string(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.sendPendingReminders(now)
+	rows, err := a.store.DB.Query("SELECT dedupe_key,status FROM notifications ORDER BY dedupe_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, status string
+		if err = rows.Scan(&key, &status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "expired" {
+			t.Fatalf("%s status = %q", key, status)
+		}
+	}
+}
+
+func TestProcessRemindersDoesNotScheduleAfterFromExpiredDashboard(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.NotifyBefore = true
+	g.NotifyAfter = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	a.runtimes[1] = &accountRuntime{dash: reminderDashboard(time.Now().Unix(), 100, time.Now().Add(-time.Minute).Unix())}
+	a.processReminders()
+	if count := notificationCount(t, a); count != 0 {
+		t.Fatalf("notifications = %d", count)
+	}
+}
+
+func TestConfirmedNotificationRemainsStagedUntilDashboardPublication(t *testing.T) {
+	a := newReminderTestApp(t)
+	oldReset := time.Now().Unix()
+	_, _ = a.storeLimitSnapshots(reminderDashboard(oldReset-60, 100, oldReset))
+	keys, err := a.storeLimitSnapshots(reminderDashboard(oldReset+60, 0, oldReset+3600))
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys=%v err=%v", keys, err)
+	}
+	a.sendPendingReminders(time.Unix(oldReset+60, 0))
+	var status string
+	if err = a.store.DB.QueryRow("SELECT status FROM notifications WHERE dedupe_key=?", keys[0]).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "staged" {
+		t.Fatalf("status = %q", status)
+	}
+}
+
+func TestProcessRemindersReleasesScheduleLockBeforeNetworkSend(t *testing.T) {
+	a := newReminderTestApp(t)
+	enc, err := a.vault.Encrypt("secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.Set("telegram_token", enc); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.SetJSON("telegram", TelegramSettings{ChatID: 123, Configured: true}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err = a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
+		VALUES('slow-send','configured','before','pending',0,'',?,NULL,'legacy message')`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	original := tgCall
+	t.Cleanup(func() { tgCall = original })
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	tgCall = func(_ string, _ string, _ any, _ any) error {
+		close(sendStarted)
+		<-releaseSend
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		a.processReminders()
+		close(done)
+	}()
+	<-sendStarted
+	locked := make(chan struct{})
+	go func() {
+		a.reminderMu.Lock()
+		a.reminderMu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(time.Second):
+		close(releaseSend)
+		<-done
+		t.Fatal("schedule lock remained held during network send")
+	}
+	close(releaseSend)
+	<-done
+}
+
 func TestLegacyNotificationFormatting(t *testing.T) {
 	legacy := "旧消息 <保留>"
 	event, ok := decodeNotification(legacy)
@@ -437,7 +603,7 @@ func TestStoreLimitSnapshotsUsesScheduledAfterDedupeKey(t *testing.T) {
 	resetAt := now + 30
 	_, _ = a.storeLimitSnapshots(reminderDashboard(now, 70, resetAt))
 	detected, err := a.storeLimitSnapshots(reminderDashboard(now+60, 0, now+3600))
-	if err != nil || !detected {
+	if err != nil || len(detected) == 0 {
 		t.Fatalf("detected=%v err=%v", detected, err)
 	}
 	var key, kind string
@@ -474,7 +640,7 @@ func TestStoreLimitSnapshotsIgnoresNonResetChanges(t *testing.T) {
 			now := time.Now().Unix()
 			_, _ = a.storeLimitSnapshots(reminderDashboard(now, tt.oldUsed, now+3600))
 			detected, err := a.storeLimitSnapshots(reminderDashboard(now+int64(tt.age.Seconds()), tt.newUsed, now+7200))
-			if err != nil || detected || notificationCount(t, a) != 0 {
+			if err != nil || len(detected) != 0 || notificationCount(t, a) != 0 {
 				t.Fatalf("detected=%v notifications=%d err=%v", detected, notificationCount(t, a), err)
 			}
 		})

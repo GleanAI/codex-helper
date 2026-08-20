@@ -29,17 +29,18 @@ import (
 var Version = "0.2.0"
 
 type App struct {
-	dataDir       string
-	store         *store.Store
-	vault         *security.Vault
-	server        *http.Server
-	ctx           context.Context
-	cancel        context.CancelFunc
-	mu            sync.RWMutex
-	runtimes      map[int64]*accountRuntime
-	loginAttempts sync.Map
-	reminderMu    sync.Mutex
-	telegramMu    sync.Mutex
+	dataDir        string
+	store          *store.Store
+	vault          *security.Vault
+	server         *http.Server
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.RWMutex
+	runtimes       map[int64]*accountRuntime
+	loginAttempts  sync.Map
+	reminderMu     sync.Mutex
+	reminderSendMu sync.Mutex
+	telegramMu     sync.Mutex
 }
 type accountRuntime struct {
 	client     codexClient
