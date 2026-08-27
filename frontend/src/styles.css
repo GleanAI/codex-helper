@@ -408,29 +408,6 @@ header p {
   .overview-connection .usage-limits {
     grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
   }
-  .overview-connection .usage-limits-seven-day-monthly {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .overview-connection .usage-limits-seven-day-monthly-paired {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .overview-connection
-    .usage-limits-seven-day-monthly-paired
-    > .usage-limit:not(.usage-limit-seven-day):not(.usage-limit-monthly) {
-    grid-column: 1;
-  }
-  .overview-connection
-    .usage-limits-seven-day-monthly-paired
-    > .usage-limit-seven-day {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .overview-connection
-    .usage-limits-seven-day-monthly-paired
-    > .usage-limit-monthly {
-    grid-column: 2;
-    grid-row: 2;
-  }
 }
 .balance {
   overflow: hidden;

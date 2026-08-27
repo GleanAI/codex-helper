@@ -378,7 +378,7 @@ test("overview merges personal and Team connections for the same email", async (
     if (key === "accounts") return route.fulfill({ json: accounts });
     if (key === "dashboard") {
       const accountId = Number(requestUrl.searchParams.get("accountId"));
-      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 3 : 0;
+      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 2 : 0;
       return route.fulfill({
         json: {
           accountId,
@@ -390,15 +390,11 @@ test("overview merges personal and Team connections for the same email", async (
           },
           limits: Array.from({ length: limitCount }, (_, index) => ({
             limitId: `limit-${index}`,
-            limitName: index ? "Review" : "Codex",
+            limitName: accountId === 2 ? null : index ? "Review" : "Codex",
             windowType: index ? "secondary" : "primary",
             usedPercent: accountId === 1 ? 25 + index * 35 : 40,
             windowDurationMinutes:
-              accountId === 2
-                ? [300, 10_080, 43_200][index]
-                : index
-                  ? 43_200
-                  : 10_080,
+              accountId === 2 ? [300, 10_080][index] : index ? 43_200 : 10_080,
             resetsAt: Math.floor(Date.now() / 1000) + 604_800,
           })),
           monthlyCreditLimit:
@@ -430,7 +426,7 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(
     merged.getByText("Team / Business 工作区", { exact: true }),
   ).toBeVisible();
-  await expect(merged.locator(".usage-limit")).toHaveCount(6);
+  await expect(merged.locator(".usage-limit")).toHaveCount(5);
   await expect(
     merged.locator('.usage-limit-gauge[aria-label*="剩余 75%"]'),
   ).toBeVisible();
@@ -445,9 +441,11 @@ test("overview merges personal and Team connections for the same email", async (
       '.usage-limit-gauge[aria-label="月度额度：剩余 100%"]',
     ),
   ).toBeVisible();
-  await expect(
-    teamConnection.locator(".usage-limits > .usage-limit").last(),
-  ).toHaveClass(/usage-limit-monthly/);
+  await expect(teamConnection.locator(".usage-limit-details h4")).toHaveText([
+    "5 小时窗口",
+    "7 天窗口",
+    "月度额度",
+  ]);
   await expect(merged.getByText("下次重置").first()).toBeVisible();
   await expect(
     cards
@@ -462,13 +460,9 @@ test("overview merges personal and Team connections for the same email", async (
     const teamConnection = element.querySelector(
       ".overview-connection:nth-child(2)",
     );
-    const shortLimit = teamConnection?.querySelector(
-      ".usage-limits > .usage-limit",
+    const teamLimits = Array.from(
+      teamConnection?.querySelectorAll(".usage-limits > .usage-limit") ?? [],
     );
-    const sevenDayLimit = teamConnection?.querySelector(
-      ".usage-limit-seven-day",
-    );
-    const monthlyLimit = teamConnection?.querySelector(".usage-limit-monthly");
     const titleRect = title?.getBoundingClientRect();
     const titleLineHeight = title
       ? Number.parseFloat(getComputedStyle(title).lineHeight)
@@ -482,26 +476,17 @@ test("overview merges personal and Team connections for the same email", async (
         titleRect && titleLineHeight
           ? Math.round(titleRect.height / titleLineHeight)
           : 0,
-      shortTop: Math.round(shortLimit?.getBoundingClientRect().top ?? 0),
-      sevenDayTop: Math.round(sevenDayLimit?.getBoundingClientRect().top ?? 0),
-      sevenDayLeft: Math.round(
-        sevenDayLimit?.getBoundingClientRect().left ?? 0,
-      ),
-      sevenDayWidth: Math.round(
-        sevenDayLimit?.getBoundingClientRect().width ?? 0,
-      ),
-      sevenDayBottom: Math.round(
-        sevenDayLimit?.getBoundingClientRect().bottom ?? 0,
-      ),
-      monthlyTop: Math.round(monthlyLimit?.getBoundingClientRect().top ?? 0),
-      monthlyLeft: Math.round(monthlyLimit?.getBoundingClientRect().left ?? 0),
-      monthlyWidth: Math.round(
-        monthlyLimit?.getBoundingClientRect().width ?? 0,
-      ),
+      teamLimits: teamLimits.map((limit) => {
+        const rect = limit.getBoundingClientRect();
+        return {
+          top: Math.round(rect.top),
+          left: Math.round(rect.left),
+          width: Math.round(rect.width),
+          overflows: limit.scrollWidth > limit.clientWidth,
+        };
+      }),
       viewportWidth: document.documentElement.clientWidth,
       documentWidth: document.documentElement.scrollWidth,
-      viewportHeight: document.documentElement.clientHeight,
-      documentHeight: document.documentElement.scrollHeight,
     };
   });
   expect(geometry.cardWidth).toBeLessThanOrEqual(geometry.viewportWidth);
@@ -509,6 +494,12 @@ test("overview merges personal and Team connections for the same email", async (
     testInfo.project.name === "desktop" ? 52 : 60,
   );
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.teamLimits).toHaveLength(3);
+  expect(geometry.teamLimits[0].top).toBeLessThan(geometry.teamLimits[1].top);
+  expect(geometry.teamLimits[1].top).toBeLessThan(geometry.teamLimits[2].top);
+  expect(new Set(geometry.teamLimits.map(({ left }) => left)).size).toBe(1);
+  expect(new Set(geometry.teamLimits.map(({ width }) => width)).size).toBe(1);
+  expect(geometry.teamLimits.every(({ overflows }) => !overflows)).toBe(true);
   if (testInfo.project.name === "desktop") {
     const cardTops = await cards.evaluateAll((elements) =>
       elements.map((element) =>
@@ -519,13 +510,6 @@ test("overview merges personal and Team connections for the same email", async (
     expect(geometry.cardWidth).toBeLessThanOrEqual(360);
     expect(new Set(cardTops).size).toBe(1);
     expect(geometry.titleLines).toBe(1);
-    expect(geometry.shortTop).toBe(geometry.sevenDayTop);
-    expect(geometry.monthlyTop).toBeGreaterThanOrEqual(geometry.sevenDayBottom);
-    expect(geometry.monthlyLeft).toBe(geometry.sevenDayLeft);
-    expect(geometry.monthlyWidth).toBe(geometry.sevenDayWidth);
-    expect(geometry.documentHeight).toBeLessThanOrEqual(
-      geometry.viewportHeight,
-    );
   }
 
   await merged

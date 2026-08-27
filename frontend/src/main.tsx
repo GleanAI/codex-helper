@@ -678,23 +678,17 @@ function OverviewConnection({
     label: string;
     usedPercent: number;
     resetsAt: number;
-    layout?: "seven-day" | "monthly";
   }> =
     dashboard?.limits.map((limit) => ({
       label: limitWindowLabel(limit),
       usedPercent: limit.usedPercent,
       resetsAt: limit.resetsAt,
-      layout:
-        limit.windowDurationMinutes === 10_080
-          ? ("seven-day" as const)
-          : undefined,
     })) ?? [];
   if (dashboard?.monthlyCreditLimit)
     limits.push({
       label: "月度额度",
       usedPercent: 100 - dashboard.monthlyCreditLimit.remainingPercent,
       resetsAt: dashboard.monthlyCreditLimit.resetsAt,
-      layout: "monthly" as const,
     });
 
   return (
@@ -706,7 +700,6 @@ function OverviewConnection({
       status={statusTone}
       fetchedAt={dashboard?.fetchedAt ?? 0}
       limits={limits}
-      stackMonthlyUnderSevenDay={account.actualKind === "team"}
       emptyMessage={
         !dashboard && !error
           ? "正在读取限额…"
