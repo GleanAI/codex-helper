@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net"
@@ -60,7 +61,7 @@ func (a *App) smtpAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in SMTPSettings
-	if decode(r, &in) != nil || in.Host == "" || in.Port < 1 || in.Port > 65535 || in.From == "" || in.To == "" {
+	if decode(w, r, &in) != nil || in.Host == "" || in.Port < 1 || in.Port > 65535 || in.From == "" || in.To == "" {
 		jsonOut(w, 400, map[string]string{"error": "SMTP 配置不完整"})
 		return
 	}
@@ -195,7 +196,7 @@ func (a *App) telegramAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in TelegramSettings
-	if decode(r, &in) != nil {
+	if decode(w, r, &in) != nil {
 		jsonOut(w, 400, map[string]string{"error": "配置格式错误"})
 		return
 	}
@@ -290,13 +291,16 @@ func telegramCall(token, method string, p any, out any) error {
 	b, _ := json.Marshal(p)
 	req, e := http.NewRequestWithContext(context.Background(), "POST", "https://api.telegram.org/bot"+token+"/"+method, bytes.NewReader(b))
 	if e != nil {
-		return e
+		return errors.New("Telegram 请求失败")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c := &http.Client{Timeout: 35 * time.Second}
 	resp, e := c.Do(req)
 	if e != nil {
-		return e
+		if errors.Is(e, context.DeadlineExceeded) {
+			return errors.New("Telegram 请求超时")
+		}
+		return errors.New("Telegram 请求失败")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -498,8 +502,8 @@ func (a *App) processReminders() {
 			event := notificationEvent{Version: 1, Kind: "before", Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
 			body, _ := json.Marshal(event)
 			_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
-					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-					VALUES(?,?,'before','pending',0,'',?,NULL,?)`, key, "configured", at.Unix(), string(body))
+						(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+						VALUES(?,?,'before','pending',0,'',?,NULL,?,?)`, key, "configured", at.Unix(), string(body), d.AccountID)
 		}
 	}
 	a.reminderMu.Unlock()
@@ -511,18 +515,20 @@ func (a *App) processReminders() {
 
 func (a *App) sendPendingReminders(now time.Time) {
 	type pendingReminder struct {
-		key  string
-		body string
+		key       string
+		body      string
+		accountID int64
 	}
-	rows, err := a.store.DB.Query(`SELECT dedupe_key,body FROM notifications
-		WHERE status IN ('pending','failed') AND scheduled_at<=? AND scheduled_at>=? ORDER BY scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
+	rows, err := a.store.DB.Query(`SELECT n.dedupe_key,n.body,n.account_id FROM notifications n
+		JOIN accounts a ON a.id=n.account_id
+		WHERE n.status IN ('pending','failed') AND n.scheduled_at<=? AND n.scheduled_at>=? ORDER BY n.scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
 	if err != nil {
 		return
 	}
 	pending := []pendingReminder{}
 	for rows.Next() {
 		var p pendingReminder
-		if rows.Scan(&p.key, &p.body) == nil && p.body != "" {
+		if rows.Scan(&p.key, &p.body, &p.accountID) == nil && p.body != "" {
 			pending = append(pending, p)
 		}
 	}

@@ -6,10 +6,10 @@
 
 - 默认监听 `${LISTEN_ADDR:-:8080}`，API 前缀为 `/api/v1/`。
 - `GET /health/live` 始终返回 `200 {"status":"ok"}`；`GET /health/ready` 在 SQLite 可用时返回 `200 {"status":"ok","appServer":bool}`，数据库不可用时返回 `503 {"error":string}`。`appServer` 表示至少一个账号的 app-server 已完成初始化。
-- JSON 请求体最多读取 1 MiB，拒绝未知字段；业务错误统一为 `{"error":string}`。未匹配 API 返回 `404 {"error":"接口不存在"}`。
+- HTTP 请求头读取超时为 10 秒，请求整体读取超时为 15 秒。JSON 请求体严格限制为 1 MiB，只允许一个 JSON 值并拒绝未知字段、连续对象和尾部垃圾；业务错误统一为 `{"error":string}`。未匹配 API 返回 `404 {"error":"接口不存在"}`。
 - 所有响应带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: same-origin` 和同源 CSP。
 - `GET /api/v1/system/status`、`POST /api/v1/setup`、`POST /api/v1/auth/login` 和 `GET /api/v1/public/overview` 匿名可用。status 与 public overview 的其他方法返回 405；其余 API 要求有效 `session` cookie，非 `GET`/`HEAD` 请求还要求 `X-Requested-With: codex-helper`，否则分别返回 401 或 403。当前 dispatcher 只对部分路由显式限制 HTTP method；下文使用“任意方法”或“非 `GET`”的地方是对实际兼容行为的记录。
-- session 有效期七天，cookie 为 `HttpOnly`、`SameSite=Strict`、`Path=/`；数据库只保存 token 摘要。登录失败按 `RemoteAddr` 在进程内限制为 15 分钟最多 10 次，超限返回 429。
+- session 有效期七天，cookie 为 `HttpOnly`、`SameSite=Strict`、`Path=/`；数据库只保存 token 摘要。登录失败按规范化客户端 IP 在进程内限制为 15 分钟最多 10 次，并发尝试也计入上限，超限返回 429。默认只信任 TCP peer；仅当 peer 命中可选的 `TRUSTED_PROXY_CIDRS` 时才从 `Forwarded` 或 `X-Forwarded-For` 代理链解析客户端 IP。
 - 未命中静态文件的非 API GET 路径返回嵌入的 `index.html`，供前端路由回退。
 
 ## 2. 公共对象
@@ -80,9 +80,9 @@
 | `GET /api/v1/accounts` | 返回 `200 Account[]`，按 ID 升序。 |
 | `POST /api/v1/accounts` | body `{displayName,expectedKind}`；空名称默认为 `新账号`，空类型默认为 `any`；成功返回 `201 Account`。 |
 | `PUT /api/v1/accounts/{id}` | body `{displayName,expectedKind?}`；名称不能为空，省略类型时保留旧值；成功时同时更新内存 Dashboard 中的显示名，并返回 `200 {ok:true}`。 |
-| `DELETE /api/v1/accounts/{id}` | 停止该账号进程，删除账号及级联历史，再删除对应凭据目录；成功返回 `200 {ok:true}`。 |
+| `DELETE /api/v1/accounts/{id}` | 停止该账号进程并等待在途同步退出，删除账号及级联用量、限额和通知历史，再删除对应凭据目录；成功返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/login/device` | 启动并初始化 app-server，调用 `account/login/start` 的 `chatgptDeviceCode` 流程；返回含 `verificationUrl`、`userCode` 和 `loginId` 的结果。 |
-| `POST /api/v1/accounts/{id}/logout` | 调用 `account/logout`，清除该槽位可从官方源恢复的每日用量缓存，并将连接状态置为 false；返回 `200 {ok:true}`。 |
+| `POST /api/v1/accounts/{id}/logout` | 与该账号同步串行执行，调用 `account/logout`，清除该槽位可从官方源恢复的每日用量缓存，并将连接状态置为 false；返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/sync` | 同步指定账号；成功 `200 {ok:true}`，上游失败 502。 |
 | `任意方法 /api/v1/dashboard?accountId={id}` | 返回内存中的 `Dashboard`；非 `GET`/`HEAD` 还需来源头。省略或无效的零值 ID 使用账号 1，前端使用 `GET`。`usage` 按日期升序，从保留期内首个已保存官方日桶连续到配置时区的今天，缺失日期返回 `totalTokens:0`；没有官方日桶时返回空数组。 |
 | `POST /api/v1/sync?accountId={id}` | 旧兼容入口，同步指定账号；省略或零值 ID 使用账号 1。 |

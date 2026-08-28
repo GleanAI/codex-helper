@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,23 @@ import (
 	"codex-helper/internal/security"
 	"codex-helper/internal/store"
 )
+
+type failingTelegramTransport struct{}
+
+func (failingTelegramTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network unavailable")
+}
+
+func TestTelegramTransportErrorsDoNotExposeToken(t *testing.T) {
+	original := http.DefaultTransport
+	http.DefaultTransport = failingTelegramTransport{}
+	t.Cleanup(func() { http.DefaultTransport = original })
+	token := "123456:SECRET_TOKEN"
+	err := telegramCall(token, "sendMessage", map[string]any{}, new(any))
+	if err == nil || strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "/bot") {
+		t.Fatalf("unsafe Telegram error: %v", err)
+	}
+}
 
 func TestSendSMTPStopsWhenServerDoesNotRespond(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -200,8 +219,8 @@ func TestBoundTelegramIgnoresLegacyDisabledFlags(t *testing.T) {
 	}
 	now := time.Now()
 	if _, err = a.store.DB.Exec(`INSERT INTO notifications
-		(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-		VALUES('disabled-test','configured','before','pending',0,'',?,NULL,'message')`, now.Unix()); err != nil {
+		(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+		VALUES('disabled-test','configured','before','pending',0,'',?,NULL,'message',1)`, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	original := tgCall
@@ -480,8 +499,8 @@ func TestSendPendingRemindersExpiresUnconfirmedAndLateNotifications(t *testing.T
 			t.Fatal(err)
 		}
 		if _, err = a.store.DB.Exec(`INSERT INTO notifications
-			(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-			VALUES(?, 'configured', ?, 'pending', 0, '', ?, NULL, ?)`, key, event.Kind, now.Unix(), string(body)); err != nil {
+			(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+			VALUES(?, 'configured', ?, 'pending', 0, '', ?, NULL, ?, 1)`, key, event.Kind, now.Unix(), string(body)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -549,8 +568,8 @@ func TestProcessRemindersReleasesScheduleLockBeforeNetworkSend(t *testing.T) {
 	}
 	now := time.Now()
 	if _, err = a.store.DB.Exec(`INSERT INTO notifications
-		(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-		VALUES('slow-send','configured','before','pending',0,'',?,NULL,'legacy message')`, now.Unix()); err != nil {
+		(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+		VALUES('slow-send','configured','before','pending',0,'',?,NULL,'legacy message',1)`, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	original := tgCall
@@ -583,6 +602,68 @@ func TestProcessRemindersReleasesScheduleLockBeforeNetworkSend(t *testing.T) {
 	}
 	close(releaseSend)
 	<-done
+}
+
+func TestDeleteWaitsForInFlightReminderAndPreventsLaterSend(t *testing.T) {
+	a := newReminderTestApp(t)
+	account, err := a.store.CreateAccount("delete during send")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.runtimes[account.ID] = &accountRuntime{client: &fakeCodexClient{}}
+	enc, err := a.vault.Encrypt("secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.Set("telegram_token", enc); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.store.SetJSON("telegram", TelegramSettings{ChatID: 123, Configured: true}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err = a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES(?, 'configured', 'before', 'pending', ?, 'message', ?)`, fmt.Sprintf("%d:pending", account.ID), now.Unix(), account.ID); err != nil {
+		t.Fatal(err)
+	}
+	original := tgCall
+	t.Cleanup(func() { tgCall = original })
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	calls := 0
+	tgCall = func(_ string, _ string, _ any, _ any) error {
+		calls++
+		close(sendStarted)
+		<-releaseSend
+		return nil
+	}
+	sendDone := make(chan struct{})
+	go func() {
+		a.processReminders()
+		close(sendDone)
+	}()
+	<-sendStarted
+	deleteDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		a.accountAPI(recorder, httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/accounts/%d", account.ID), nil), fmt.Sprintf("accounts/%d", account.ID))
+		deleteDone <- recorder
+	}()
+	select {
+	case <-deleteDone:
+		t.Fatal("delete completed while reminder send was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseSend)
+	<-sendDone
+	if recorder := <-deleteDone; recorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	a.processReminders()
+	if calls != 1 {
+		t.Fatalf("Telegram calls = %d; want 1", calls)
+	}
 }
 
 func TestLegacyNotificationFormatting(t *testing.T) {

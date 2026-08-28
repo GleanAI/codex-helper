@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,7 +74,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			DisplayName  string `json:"displayName"`
 			ExpectedKind string `json:"expectedKind"`
 		}
-		if decode(r, &in) != nil {
+		if decode(w, r, &in) != nil {
 			jsonOut(w, 400, map[string]string{"error": "请求格式错误"})
 			break
 		}
@@ -194,7 +197,7 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 			DisplayName  string `json:"displayName"`
 			ExpectedKind string `json:"expectedKind"`
 		}
-		if decode(r, &in) != nil || strings.TrimSpace(in.DisplayName) == "" {
+		if decode(w, r, &in) != nil || strings.TrimSpace(in.DisplayName) == "" {
 			jsonOut(w, 400, map[string]string{"error": "名称不能为空"})
 			return
 		}
@@ -223,7 +226,15 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		delete(a.runtimes, id)
 		a.mu.Unlock()
 		rt.stop()
+		rt.syncing.Lock()
+		a.reminderSendMu.Lock()
 		e = a.store.DeleteAccount(id)
+		a.reminderSendMu.Unlock()
+		if e != nil {
+			rt.syncing.Unlock()
+			a.addRuntime(id)
+			break
+		}
 		if e == nil {
 			dir := filepath.Join(a.dataDir, "accounts", strconv.FormatInt(id, 10))
 			if id == 1 {
@@ -234,9 +245,12 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		if e == nil {
 			jsonOut(w, 200, map[string]bool{"ok": true})
 		}
+		rt.syncing.Unlock()
 	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "POST":
 		a.deviceLogin(w, r, id)
 	case action == "logout" && r.Method == "POST":
+		rt.syncing.Lock()
+		defer rt.syncing.Unlock()
 		var out any
 		e = rt.ensureReady(r.Context())
 		if e == nil {
@@ -245,14 +259,12 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		if e == nil {
 			e = a.store.DisconnectAccount(id)
 			if e == nil {
-				rt.syncing.Lock()
 				rt.dash.Account = AccountView{Connected: false}
 				rt.dash.Limits = []LimitBucket{}
 				rt.dash.MonthlyCreditLimit = nil
 				rt.dash.Summary = UsageSummary{}
 				rt.dash.Usage = []UsagePoint{}
 				rt.dash.FetchedAt = time.Now().Unix()
-				rt.syncing.Unlock()
 				jsonOut(w, 200, map[string]bool{"ok": true})
 			}
 		}
@@ -276,7 +288,7 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct{ Username, Password, Timezone string }
-	if decode(r, &in) != nil || len(in.Username) < 3 || len(in.Password) < 10 {
+	if decode(w, r, &in) != nil || len(in.Username) < 3 || len(in.Password) < 10 {
 		jsonOut(w, 400, map[string]string{"error": "用户名至少3位，密码至少10位"})
 		return
 	}
@@ -312,32 +324,209 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 409, map[string]string{"error": "请先初始化"})
 		return
 	}
-	ip := r.RemoteAddr
-	v, _ := a.loginAttempts.LoadOrStore(ip, []time.Time{})
-	xs := v.([]time.Time)
-	now := time.Now()
-	fresh := xs[:0]
-	for _, x := range xs {
-		if now.Sub(x) < 15*time.Minute {
-			fresh = append(fresh, x)
-		}
-	}
-	if len(fresh) >= 10 {
+	key, allowed := a.reserveLoginAttempt(r, time.Now())
+	if !allowed {
 		jsonOut(w, 429, map[string]string{"error": "尝试次数过多，请稍后再试"})
 		return
 	}
+	succeeded := false
+	defer func() { a.finishLoginAttempt(key, succeeded, time.Now()) }()
 	var in struct{ Username, Password string }
-	_ = decode(r, &in)
+	_ = decode(w, r, &in)
 	var user, hash string
 	e := a.store.DB.QueryRow("SELECT username,password_hash FROM admin WHERE id=1").Scan(&user, &hash)
 	if e != nil || user != in.Username || !security.VerifyPassword(hash, in.Password) {
-		a.loginAttempts.Store(ip, append(fresh, now))
 		jsonOut(w, 401, map[string]string{"error": "用户名或密码错误"})
 		return
 	}
-	a.loginAttempts.Delete(ip)
+	succeeded = true
 	a.newSession(w, user)
 	jsonOut(w, 200, map[string]bool{"ok": true})
+}
+
+const (
+	loginWindow      = 15 * time.Minute
+	loginMaxEntries  = 10_000
+	loginMaxAttempts = 10
+)
+
+type loginAttemptState struct {
+	failures []time.Time
+	inFlight int
+	lastSeen time.Time
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			address, addressErr := netip.ParseAddr(value)
+			if addressErr != nil {
+				return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS 包含无效地址 %q", value)
+			}
+			prefix = netip.PrefixFrom(address, address.BitLen())
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
+}
+
+func (a *App) reserveLoginAttempt(r *http.Request, now time.Time) (string, bool) {
+	key := a.loginClientIP(r).String()
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	if a.loginAttempts == nil {
+		a.loginAttempts = map[string]*loginAttemptState{}
+	}
+	if a.loginCleanupAt.IsZero() || now.Sub(a.loginCleanupAt) >= time.Minute {
+		for ip, state := range a.loginAttempts {
+			state.failures = recentLoginFailures(state.failures, now)
+			if state.inFlight == 0 && len(state.failures) == 0 && now.Sub(state.lastSeen) >= loginWindow {
+				delete(a.loginAttempts, ip)
+			}
+		}
+		a.loginCleanupAt = now
+	}
+	state := a.loginAttempts[key]
+	if state == nil {
+		if len(a.loginAttempts) >= loginMaxEntries {
+			return key, false
+		}
+		state = &loginAttemptState{}
+		a.loginAttempts[key] = state
+	}
+	state.failures = recentLoginFailures(state.failures, now)
+	state.lastSeen = now
+	if len(state.failures)+state.inFlight >= loginMaxAttempts {
+		return key, false
+	}
+	state.inFlight++
+	return key, true
+}
+
+func (a *App) finishLoginAttempt(key string, succeeded bool, now time.Time) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	state := a.loginAttempts[key]
+	if state == nil {
+		return
+	}
+	if state.inFlight > 0 {
+		state.inFlight--
+	}
+	if succeeded {
+		delete(a.loginAttempts, key)
+		return
+	}
+	state.failures = append(recentLoginFailures(state.failures, now), now)
+	state.lastSeen = now
+}
+
+func recentLoginFailures(failures []time.Time, now time.Time) []time.Time {
+	fresh := failures[:0]
+	for _, failure := range failures {
+		if now.Sub(failure) < loginWindow {
+			fresh = append(fresh, failure)
+		}
+	}
+	return fresh
+}
+
+func (a *App) loginClientIP(r *http.Request) netip.Addr {
+	peer := parseRequestIP(r.RemoteAddr)
+	if !containsIP(a.trustedProxies, peer) {
+		return peer
+	}
+	chain, ok := forwardedChain(r.Header.Get("Forwarded"))
+	if !ok || len(chain) == 0 {
+		chain, ok = xForwardedForChain(r.Header.Get("X-Forwarded-For"))
+	}
+	if !ok || len(chain) == 0 {
+		return peer
+	}
+	chain = append(chain, peer)
+	for i := len(chain) - 1; i >= 0; i-- {
+		if !containsIP(a.trustedProxies, chain[i]) {
+			return chain[i]
+		}
+	}
+	return chain[0]
+}
+
+func parseRequestIP(value string) netip.Addr {
+	host, _, err := net.SplitHostPort(value)
+	if err == nil {
+		value = host
+	}
+	value = strings.Trim(value, "[]")
+	if zone := strings.LastIndex(value, "%"); zone >= 0 {
+		value = value[:zone]
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.IPv6Unspecified()
+	}
+	return address.Unmap()
+}
+
+func containsIP(prefixes []netip.Prefix, address netip.Addr) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func xForwardedForChain(value string) ([]netip.Addr, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, false
+	}
+	parts := strings.Split(value, ",")
+	chain := make([]netip.Addr, 0, len(parts))
+	for _, part := range parts {
+		address := parseRequestIP(strings.TrimSpace(part))
+		if !address.IsValid() || address.IsUnspecified() {
+			return nil, false
+		}
+		chain = append(chain, address)
+	}
+	return chain, true
+}
+
+func forwardedChain(value string) ([]netip.Addr, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, false
+	}
+	elements := strings.Split(value, ",")
+	chain := make([]netip.Addr, 0, len(elements))
+	for _, element := range elements {
+		found := false
+		for _, parameter := range strings.Split(element, ";") {
+			name, raw, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if !ok || !strings.EqualFold(name, "for") {
+				continue
+			}
+			raw = strings.Trim(strings.TrimSpace(raw), `"`)
+			address := parseRequestIP(raw)
+			if !address.IsValid() || address.IsUnspecified() {
+				return nil, false
+			}
+			chain = append(chain, address)
+			found = true
+			break
+		}
+		if !found {
+			return nil, false
+		}
+	}
+	return chain, true
 }
 
 func (a *App) updateCredentials(w http.ResponseWriter, r *http.Request) {
@@ -346,7 +535,7 @@ func (a *App) updateCredentials(w http.ResponseWriter, r *http.Request) {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`
 	}
-	if decode(r, &in) != nil || len(in.Username) < 3 || (in.NewPassword != "" && len(in.NewPassword) < 10) {
+	if decode(w, r, &in) != nil || len(in.Username) < 3 || (in.NewPassword != "" && len(in.NewPassword) < 10) {
 		jsonOut(w, http.StatusBadRequest, map[string]string{"error": "用户名至少3位，新密码至少10位"})
 		return
 	}
@@ -445,7 +634,7 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var g GeneralSettings
-	if decode(r, &g) != nil || g.SyncMinutes < 1 || g.SyncMinutes > 60 || g.RetentionDays < 30 || g.RetentionDays > 365 || g.BeforeMinutes < 1 || g.BeforeMinutes > 1440 {
+	if decode(w, r, &g) != nil || g.SyncMinutes < 1 || g.SyncMinutes > 60 || g.RetentionDays < 30 || g.RetentionDays > 365 || g.BeforeMinutes < 1 || g.BeforeMinutes > 1440 {
 		jsonOut(w, 400, map[string]string{"error": "设置值不合法"})
 		return
 	}
@@ -474,13 +663,19 @@ func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
 	jsonOut(w, 200, out)
 }
 
-func (a *App) syncAccount(ctx context.Context, id int64) error {
+func (a *App) syncAccount(ctx context.Context, id int64) (syncErr error) {
 	rt := a.runtime(id)
 	if rt == nil {
 		return fmt.Errorf("账号不存在")
 	}
 	rt.syncing.Lock()
-	defer rt.syncing.Unlock()
+	defer func() {
+		if syncErr != nil && !errors.Is(syncErr, errRuntimeStopped) && !errors.Is(syncErr, context.Canceled) {
+			rt.dash.Stale = true
+			rt.dash.LastError = syncErr.Error()
+		}
+		rt.syncing.Unlock()
+	}()
 	if err := rt.ensureReady(ctx); err != nil {
 		return err
 	}
@@ -585,18 +780,19 @@ func (a *App) syncAccount(ctx context.Context, id int64) error {
 	if e != nil {
 		return e
 	}
-	resetNotifications, e := a.storeLimitSnapshots(d)
+	_, e = a.storeLimitSnapshots(d)
 	if e != nil {
 		return e
 	}
-	rt.dash = d
-	_ = a.store.UpdateAccount(id, d.Account.Email, d.Account.PlanType, d.Account.Connected)
-	for _, key := range resetNotifications {
-		if _, e = a.store.DB.Exec("UPDATE notifications SET status='pending' WHERE dedupe_key=? AND status='staged'", key); e != nil {
-			return e
-		}
+	if e = a.store.UpdateAccount(id, d.Account.Email, d.Account.PlanType, d.Account.Connected); e != nil {
+		return e
 	}
-	if len(resetNotifications) > 0 {
+	rt.dash = d
+	promoted, e := a.store.PromoteStagedNotifications(id, d.FetchedAt)
+	if e != nil {
+		return e
+	}
+	if promoted > 0 {
 		go a.processReminders()
 	}
 	return nil
@@ -677,8 +873,8 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 					Remaining: 100 - x.UsedPercent, PreviousUsed: previousUsed, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
 				body, _ := json.Marshal(event)
 				_, err = tx.Exec(`INSERT OR IGNORE INTO notifications
-				(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body)
-				VALUES(?,?,?,'staged',0,'',?,NULL,?)`, key, "configured", kind, d.FetchedAt, string(body))
+					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+					VALUES(?,?,?,'staged',0,'',?,NULL,?,?)`, key, "configured", kind, d.FetchedAt, string(body), d.AccountID)
 				if err != nil {
 					return nil, err
 				}

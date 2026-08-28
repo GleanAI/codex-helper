@@ -97,6 +97,8 @@ http://服务器地址:8180
 
 > 首次初始化没有额外安装码。创建管理员之前，不要将端口直接暴露到不可信网络。公网部署应使用 HTTPS 反向代理，并限制初始化阶段的访问来源。
 
+登录限流默认按直连 peer IP 计算。反向代理后如需使用真实客户端 IP，可在 shell 或 `.env` 中设置 `TRUSTED_PROXY_CIDRS`，两套 Compose 文件都会将其传入容器；值为由你控制的代理 IP/CIDR 逗号列表，例如 `172.18.0.0/16`。后端只会信任来自这些地址的 `Forwarded` 或 `X-Forwarded-For`；不要把任意公网网段加入该列表。
+
 ## 连接 Codex 账户
 
 1. 使用管理员账号登录 Codex Helper。
@@ -150,6 +152,8 @@ http://服务器地址:8180
 - 立即刷新 / `/refresh`
 
 服务器必须能够访问 `https://api.telegram.org`。
+
+从早期版本升级时，如果 Telegram 曾在 DNS、连接或 TLS 阶段失败，旧数据库通知错误可能记录过含 Token 的请求 URL。新版本会清理活动数据库中的这类错误，但无法清理已导出的旧快照；应在 BotFather 轮换 Bot Token，并替换旧备份。
 
 点击“解除绑定”会删除当前 Bot Token、Chat ID 和未使用的绑定码。该操作不可恢复，之后需要重新填写 Token 并绑定。
 

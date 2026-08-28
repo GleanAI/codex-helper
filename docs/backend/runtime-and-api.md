@@ -18,7 +18,7 @@
 
 ## 后台任务
 
-- `keepCodex` 每秒检查未就绪的账号，串行完成进程启动与协议初始化，成功后立即同步。
+- `keepCodex` 每秒检查未就绪的账号，串行完成进程启动与协议初始化，成功后立即同步。初始化或任何同步路径失败都会保留最后一份 Dashboard 并标记 stale/failed，成功同步会清除错误状态。
 - `scheduler` 每分钟按 `syncMinutes` 的 Unix 时间取模触发全账号同步，清理过期历史，并异步处理提醒。
 - `telegramLoop` 使用 Bot API long polling；仅已配置 Token 才请求更新。
 - app-server 的登录、账号和限额通知会触发带短退避的同步；多次失败将内存 Dashboard 标为 stale 并记录 `lastError`。

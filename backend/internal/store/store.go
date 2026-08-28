@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires_at INT
 CREATE TABLE IF NOT EXISTS daily_usage (date TEXT PRIMARY KEY, total_tokens INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS limit_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, limit_id TEXT NOT NULL, window_type TEXT NOT NULL, used_percent REAL NOT NULL, duration_mins INTEGER NOT NULL, resets_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_limits_time ON limit_snapshots(fetched_at);
-CREATE TABLE IF NOT EXISTS notifications (dedupe_key TEXT PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, scheduled_at INTEGER NOT NULL, sent_at INTEGER, body TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS notifications (dedupe_key TEXT PRIMARY KEY, channel TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, scheduled_at INTEGER NOT NULL, sent_at INTEGER, body TEXT NOT NULL DEFAULT '', account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS telegram_updates (id INTEGER PRIMARY KEY CHECK(id=1), offset INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 `)
@@ -54,7 +55,120 @@ INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 	if err = s.ensureNotificationBody(); err != nil {
 		return err
 	}
-	return s.migrateAccounts()
+	if _, err = s.DB.Exec(`UPDATE notifications SET last_error='Telegram 请求失败'
+		WHERE instr(COALESCE(last_error,''),'api.telegram.org/bot') > 0`); err != nil {
+		return err
+	}
+	if err = s.migrateAccounts(); err != nil {
+		return err
+	}
+	return s.migrateNotificationAccounts()
+}
+
+func (s *Store) migrateNotificationAccounts() error {
+	rows, err := s.DB.Query("PRAGMA table_info(notifications)")
+	if err != nil {
+		return err
+	}
+	hasAccountID := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err = rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		hasAccountID = hasAccountID || name == "account_id"
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if !hasAccountID {
+		if _, err = s.DB.Exec("ALTER TABLE notifications ADD COLUMN account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE"); err != nil {
+			return err
+		}
+	}
+	if _, err = s.DB.Exec("CREATE INDEX IF NOT EXISTS idx_notifications_account_status_time ON notifications(account_id,status,scheduled_at)"); err != nil {
+		return err
+	}
+
+	accounts := map[int64]bool{}
+	accountRows, err := s.DB.Query("SELECT id FROM accounts")
+	if err != nil {
+		return err
+	}
+	for accountRows.Next() {
+		var id int64
+		if err = accountRows.Scan(&id); err != nil {
+			accountRows.Close()
+			return err
+		}
+		accounts[id] = true
+	}
+	if err = accountRows.Close(); err != nil {
+		return err
+	}
+
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	notificationRows, err := tx.Query("SELECT dedupe_key,status FROM notifications WHERE account_id IS NULL")
+	if err != nil {
+		return err
+	}
+	type legacyNotification struct{ key, status string }
+	legacy := []legacyNotification{}
+	for notificationRows.Next() {
+		var notification legacyNotification
+		if err = notificationRows.Scan(&notification.key, &notification.status); err != nil {
+			notificationRows.Close()
+			return err
+		}
+		legacy = append(legacy, notification)
+	}
+	if err = notificationRows.Close(); err != nil {
+		return err
+	}
+	for _, notification := range legacy {
+		accountID, identified := notificationAccountID(notification.key, accounts)
+		if identified {
+			if _, err = tx.Exec("UPDATE notifications SET account_id=? WHERE dedupe_key=?", accountID, notification.key); err != nil {
+				return err
+			}
+		} else if notification.status != "sent" {
+			if _, err = tx.Exec("DELETE FROM notifications WHERE dedupe_key=?", notification.key); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func notificationAccountID(key string, accounts map[int64]bool) (int64, bool) {
+	prefix, _, found := strings.Cut(key, ":")
+	if found {
+		if accountID, err := strconv.ParseInt(prefix, 10, 64); err == nil && accounts[accountID] {
+			return accountID, true
+		}
+	}
+
+	// Before multi-account support, reminder keys had no account prefix:
+	// <limitID>:<windowType>:<resetsAt>:<before|after>. All data from that
+	// schema belongs to the default account created as account 1.
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || !accounts[1] {
+		return 0, false
+	}
+	if _, err := strconv.ParseInt(parts[2], 10, 64); err != nil {
+		return 0, false
+	}
+	if parts[3] != "before" && parts[3] != "after" {
+		return 0, false
+	}
+	return 1, true
 }
 
 func (s *Store) ensureNotificationBody() error {
@@ -286,12 +400,57 @@ func validationStatus(expected string, connected bool, plan *string) string {
 	return "mismatch"
 }
 func (s *Store) UpdateAccount(id int64, email, plan *string, connected bool) error {
-	_, e := s.DB.Exec("UPDATE accounts SET email=?,plan_type=?,connected=?,updated_at=? WHERE id=?", email, plan, connected, time.Now().Unix(), id)
-	return e
+	result, err := s.DB.Exec("UPDATE accounts SET email=?,plan_type=?,connected=?,updated_at=? WHERE id=?", email, plan, connected, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 func (s *Store) DeleteAccount(id int64) error {
-	_, e := s.DB.Exec("DELETE FROM accounts WHERE id=?", id)
-	return e
+	result, err := s.DB.Exec("DELETE FROM accounts WHERE id=?", id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) PromoteStagedNotifications(accountID, now int64) (int64, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE notifications SET status='expired',last_error=''
+		WHERE account_id=? AND status='staged' AND scheduled_at<?`, accountID, now-int64((6*time.Hour).Seconds())); err != nil {
+		return 0, err
+	}
+	result, err := tx.Exec(`UPDATE notifications SET status='pending'
+		WHERE account_id=? AND status='staged' AND scheduled_at>=?`, accountID, now-int64((6*time.Hour).Seconds()))
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 func (s *Store) Get(key string) (string, bool) {

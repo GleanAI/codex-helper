@@ -12,7 +12,7 @@
 
 所有非 `GET`/`HEAD` 受保护请求还必须携带 `X-Requested-With: codex-helper`。这是当前同源部署下的额外 CSRF 门禁，不替代 session 校验，也不意味着可以放宽 CSP 或 cookie 策略。`Secure` 当前为 false，以支持 README 中直接 HTTP 部署；公网必须由 HTTPS 反向代理保护，调整此兼容行为时同步评估代理终止 TLS 的方式。
 
-登录失败限流仅存在于单进程内，以 `RemoteAddr` 为 key，每 15 分钟最多 10 次。修改反向代理或客户端 IP 处理时，不能未经可信代理白名单就相信任意转发头。
+登录失败限流仅存在于单进程内，以规范化客户端 IP 为 key，每 15 分钟最多 10 次，并为并发校验预留计数。默认只采用 TCP peer IP；配置逗号分隔的 `TRUSTED_PROXY_CIDRS` 后，仅来自这些 peer 的请求会解析 `Forwarded` 或 `X-Forwarded-For`，并从代理链右侧跳过可信代理。状态表定期淘汰，最多保留 10,000 个 IP；达到上限时未知 IP 返回 429。
 
 ## 密钥与外部凭据
 
@@ -22,6 +22,6 @@ Codex OAuth 凭据由 app-server 写入各账号隔离的 `CODEX_HOME`，不经�
 
 ## HTTP 边界
 
-JSON 解码限制为 1 MiB 并拒绝未知字段。统一安全头包括限制性 CSP、`nosniff`、禁止 iframe 和 same-origin referrer。前端路由、按钮禁用和邮箱掩码均不是服务端授权边界；所有新敏感端点必须在后端经过 `require`，改变 API 方法时还要核对来源头逻辑。
+HTTP server 使用 10 秒请求头读取超时和 15 秒整体读取超时。JSON 解码严格限制为 1 MiB，只接受单个 JSON 值，并拒绝未知字段、连续对象与尾部垃圾。统一安全头包括限制性 CSP、`nosniff`、禁止 iframe 和 same-origin referrer。前端路由、按钮禁用和邮箱掩码均不是服务端授权边界；所有新敏感端点必须在后端经过 `require`，改变 API 方法时还要核对来源头逻辑。
 
 `GET /api/v1/public/overview` 是用量信息的专用匿名例外。邮箱在服务端完成分组和掩码，每个需隐藏的邮箱片段最多使用三个星号；响应只包含公开页面需要的连接名称、套餐、归一化状态、限额与更新时间，不得通过该端点返回账号 ID、完整邮箱、认证模式、原始上游错误、Token 摘要或历史。现有管理端账号和 Dashboard API 仍必须经过 `require`。

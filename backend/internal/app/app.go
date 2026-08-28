@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/smtp"
 	"os"
 	"path/filepath"
@@ -37,7 +38,10 @@ type App struct {
 	cancel         context.CancelFunc
 	mu             sync.RWMutex
 	runtimes       map[int64]*accountRuntime
-	loginAttempts  sync.Map
+	loginMu        sync.Mutex
+	loginAttempts  map[string]*loginAttemptState
+	loginCleanupAt time.Time
+	trustedProxies []netip.Prefix
 	reminderMu     sync.Mutex
 	reminderSendMu sync.Mutex
 	telegramMu     sync.Mutex
@@ -72,12 +76,18 @@ func New() (*App, error) {
 		return nil, e
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &App{dataDir: dir, store: s, vault: v, ctx: ctx, cancel: cancel, runtimes: map[int64]*accountRuntime{}}
+	trustedProxies, e := parseTrustedProxyCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if e != nil {
+		cancel()
+		_ = s.DB.Close()
+		return nil, e
+	}
+	a := &App{dataDir: dir, store: s, vault: v, ctx: ctx, cancel: cancel, runtimes: map[int64]*accountRuntime{}, loginAttempts: map[string]*loginAttemptState{}, trustedProxies: trustedProxies}
 	accounts, _ := s.Accounts()
 	for _, account := range accounts {
 		a.addRuntime(account.ID)
 	}
-	a.server = &http.Server{Addr: env("LISTEN_ADDR", ":8080"), Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	a.server = &http.Server{Addr: env("LISTEN_ADDR", ":8080"), Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	return a, nil
 }
 func env(k, d string) string {
@@ -133,6 +143,7 @@ func (a *App) keepCodex() {
 			if e := rt.ensureReady(a.ctx); e == nil {
 				_ = a.syncAccount(context.Background(), id)
 			} else if !errors.Is(e, errRuntimeStopped) {
+				a.markRuntimeFailure(id, e)
 				log.Printf("app-server initialize: %v", e)
 			}
 		}
@@ -167,12 +178,21 @@ func (a *App) syncAccountWithRetry(id int64, requireClassifiedAccount bool) {
 			err = errors.New("登录已完成，但工作区套餐尚未就绪")
 		}
 	}
-	if rt := a.runtime(id); rt != nil {
-		rt.syncing.Lock()
-		rt.dash.Stale = true
-		rt.dash.LastError = err.Error()
-		rt.syncing.Unlock()
+	a.markRuntimeFailure(id, err)
+}
+
+func (a *App) markRuntimeFailure(id int64, err error) {
+	if err == nil || errors.Is(err, errRuntimeStopped) || errors.Is(err, context.Canceled) {
+		return
 	}
+	rt := a.runtime(id)
+	if rt == nil {
+		return
+	}
+	rt.syncing.Lock()
+	rt.dash.Stale = true
+	rt.dash.LastError = err.Error()
+	rt.syncing.Unlock()
 }
 
 func accountClassificationReady(rt *accountRuntime) bool {
@@ -334,11 +354,21 @@ func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func decode(r *http.Request, v any) error {
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	defer r.Body.Close()
-	d := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 func (a *App) authed(r *http.Request) bool {
 	c, e := r.Cookie("session")

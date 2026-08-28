@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -272,6 +273,87 @@ func TestLegacyNotificationsGainBodyColumn(t *testing.T) {
 	}
 }
 
+func TestLegacyNotificationsGainAccountIDAndDeleteWithAccount(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "codex-helper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE accounts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,display_name TEXT NOT NULL,email TEXT,plan_type TEXT,
+		expected_kind TEXT NOT NULL DEFAULT 'any',connected INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+		INSERT INTO accounts VALUES(1,'legacy',NULL,NULL,'any',0,1,1);
+		CREATE TABLE notifications (
+		dedupe_key TEXT PRIMARY KEY,channel TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,
+		attempts INTEGER NOT NULL DEFAULT 0,last_error TEXT,scheduled_at INTEGER NOT NULL,sent_at INTEGER);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at)
+		VALUES('1:codex:primary:10:before','configured','before','sent',1,2);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at)
+		VALUES('codex:primary:10:after','configured','after','sent',1,2);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at)
+		VALUES('unrecognized-key','configured','after','sent',1,2);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"1:codex:primary:10:before", "codex:primary:10:after"} {
+		var accountID int64
+		if err = s.DB.QueryRow("SELECT account_id FROM notifications WHERE dedupe_key=?", key).Scan(&accountID); err != nil || accountID != 1 {
+			t.Fatalf("%s account_id = %d, err = %v", key, accountID, err)
+		}
+	}
+	var unknownAccountID sql.NullInt64
+	if err = s.DB.QueryRow("SELECT account_id FROM notifications WHERE dedupe_key='unrecognized-key'").Scan(&unknownAccountID); err != nil || unknownAccountID.Valid {
+		t.Fatalf("unrecognized account_id = %v, err = %v", unknownAccountID, err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatalf("second migration failed: %v", err)
+	}
+	defer s.DB.Close()
+	if err = s.DeleteAccount(1); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE dedupe_key != 'unrecognized-key'").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("notification count = %d, err = %v", count, err)
+	}
+}
+
+func TestPromoteStagedNotificationsRecoversCurrentAndExpiresOld(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	now := int64(100_000)
+	for key, scheduledAt := range map[string]int64{"current": now - 60, "old": now - int64((7 * time.Hour).Seconds())} {
+		_, err = s.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+			VALUES(?, 'configured', 'after', 'staged', ?, 'message', 1)`, key, scheduledAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	promoted, err := s.PromoteStagedNotifications(1, now)
+	if err != nil || promoted != 1 {
+		t.Fatalf("promoted = %d, err = %v", promoted, err)
+	}
+	for key, want := range map[string]string{"current": "pending", "old": "expired"} {
+		var status string
+		if err = s.DB.QueryRow("SELECT status FROM notifications WHERE dedupe_key=?", key).Scan(&status); err != nil || status != want {
+			t.Fatalf("%s status = %q, err = %v", key, status, err)
+		}
+	}
+}
+
 func TestBackupIncludesCommittedWALData(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir)
@@ -299,5 +381,34 @@ func TestBackupIncludesCommittedWALData(t *testing.T) {
 	}
 	if value != "committed-in-wal" {
 		t.Fatalf("backup value = %q", value)
+	}
+}
+
+func TestOpenScrubsTelegramTokensFromNotificationErrors(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,last_error)
+		VALUES('1:codex:primary:1:before','configured','before','failed',1,'message','Post "https://api.telegram.org/bot123:SECRET/sendMessage": timeout')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	var lastError string
+	if err = s.DB.QueryRow("SELECT last_error FROM notifications WHERE dedupe_key='1:codex:primary:1:before'").Scan(&lastError); err != nil {
+		t.Fatal(err)
+	}
+	if lastError != "Telegram 请求失败" {
+		t.Fatalf("last_error = %q", lastError)
 	}
 }

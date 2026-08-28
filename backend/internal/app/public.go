@@ -110,10 +110,12 @@ func publicKindOrder(kind string) int {
 
 func (a *App) publicConnection(account store.Account) publicOverviewConnection {
 	dashboard := Dashboard{}
+	runtimeReady := false
 	if runtime := a.runtime(account.ID); runtime != nil {
 		runtime.syncing.Lock()
 		dashboard = runtime.dash
 		runtime.syncing.Unlock()
+		runtimeReady = runtime.client == nil || runtime.Ready()
 	}
 
 	status := "healthy"
@@ -124,6 +126,8 @@ func (a *App) publicConnection(account store.Account) publicOverviewConnection {
 		status = "failed"
 	case dashboard.FetchedAt == 0:
 		status = "loading"
+	case !runtimeReady:
+		status = "stale"
 	case account.ActualKind == "unknown":
 		status = "pending"
 	case dashboard.Stale:

@@ -8,10 +8,10 @@
 - `admin` 与 `sessions` 保存唯一管理员和登录会话。
 - `accounts` 保存 Codex 连接元数据与期望套餐类型。
 - `daily_usage` 和 `limit_snapshots` 按 `account_id` 保存历史，删除账号时级联删除。同步返回的官方日桶以账号和日期为键合并；用于连续图表的零值日期只在读取时生成，不写入数据库。`daily_usage` 是可从官方源恢复的缓存，账号槽位退出登录、身份未知或换绑到不同邮箱时只清除该槽位的记录，避免跨身份展示。
-- `notifications` 保存稳定去重键、调度时间、结构化消息、状态、次数和错误。
+- `notifications` 保存账号外键、稳定去重键、调度时间、结构化消息、状态、次数和脱敏错误；删除账号时级联删除对应通知。
 - `telegram_updates` 保存 Bot API offset。
 
-启动迁移必须幂等并兼容早期单账号库：创建默认账号 1，把旧用量和限额数据迁入该账号，补 `expected_kind` 和通知 body。schema 变化应增加覆盖旧结构且保留已有行的测试。
+启动迁移必须幂等并兼容早期单账号库：创建默认账号 1，把旧用量、限额以及可识别的旧通知去重记录迁入该账号，补 `expected_kind`、通知 body 和账号外键。schema 变化应增加覆盖旧结构且保留已有行的测试。
 
 ## 清理与备份
 
@@ -23,12 +23,12 @@
 
 限额快照按 `(account_id, limit_id, window_type)` 比较。重置前提醒的 key 包含旧周期的 `resets_at` 和 `before`。重置后确认不再仅凭本地时钟到点生成：正常重置必须在旧重置时间后的六小时内看到上游 `resets_at` 推进到未来的新周期，再以旧周期时间生成 `after` key；异常提前重置以六小时内旧快照的 ID 生成 `detected_after` key，且百分比回落必须超过 `0.01`。过期的重置前提醒和无法证明已确认的旧版重置后记录不会发送。
 
-确认事件保存新快照中的剩余比例和下一次重置时间。同步先提交快照并发布内存 Dashboard，再异步处理通知，因此管理端、公开页、Telegram 查询、自动 Telegram 提醒和 SMTP 邮件共享同一份已确认数据。重置后消息统一显示“当前额度剩余”，其中“下次重置”及相对时间均根据新周期计算。
+确认事件保存新快照中的剩余比例和下一次重置时间。同步先提交 staged 快照和通知，成功保存账号并发布内存 Dashboard 后，按账号恢复六小时窗口内的全部 staged 记录；因此进程在两步之间崩溃时，下次成功同步仍会继续发送且不会重复。过期 staged 记录标记为 expired。管理端、公开页、Telegram 查询、自动 Telegram 提醒和 SMTP 邮件共享同一份已确认数据。
 
 处理器每分钟为当前 Dashboard 生成到期提醒，并只发送 `scheduled_at` 后六小时内的未发送记录。Telegram 与 SMTP 中任何启用渠道失败都会把记录标记为 failed，后续周期在窗口内重试；全部启用渠道成功才标记 sent。稳定 key 和 `INSERT OR IGNORE` 是防重复边界。
 
 ## Telegram 与 SMTP
 
-Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
+Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。Telegram transport 错误在进入 API、通知记录或日志前会去除含 Token 的 URL；启动迁移也会清理旧通知错误中的 Telegram URL。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
 
 SMTP 支持 `starttls`、隐式 `tls` 和 `none`，TLS 最低 1.2；支持可选 PLAIN AUTH，发送 multipart text/html。TCP 连接和后续 SMTP/TLS 读写共享 35 秒 deadline。修改外部调用时必须保留这一超时边界、TLS server name、HTML 转义和不记录秘密的错误处理。

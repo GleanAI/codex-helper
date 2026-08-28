@@ -14,7 +14,7 @@
 - `internal/store/store.go` 是 SQLite schema 和兼容迁移的事实来源。启动迁移必须幂等、保留旧数据并启用 foreign keys。
 - 旧单账号数据迁到账号 1；账号 1 的凭据路径永久为 `/data/codex`，不能统一搬到 `accounts/1`。
 - 删除账号必须先停止并移除精确 runtime，再删除该账号数据库行和精确凭据目录；不得使用未校验路径、glob 或宽泛递归删除。
-- `daily_usage` 与 `limit_snapshots` 以 `account_id` 隔离。任何查询、更新、提醒 key 或清理不得串账号。
+- `daily_usage`、`limit_snapshots` 与未发送通知以 `account_id` 隔离。任何查询、更新、提醒 key 或清理不得串账号；删除账号必须级联删除其通知，成功同步后才可将对应 staged 通知提升为 pending。
 - `expectedKind` 只是校验期望；未知套餐保持 unknown。相同邮箱提示重复不能成为自动合并依据。
 
 ## Codex 运行时

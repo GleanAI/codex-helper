@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +45,29 @@ func TestSystemStatusReturnsBuildVersion(t *testing.T) {
 	}
 	if body.Version != "1.2.3-test" {
 		t.Fatalf("version = %q; want %q", body.Version, "1.2.3-test")
+	}
+}
+
+func TestDecodeRejectsTrailingAndOversizedJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "second object", body: `{"value":1}{"value":2}`},
+		{name: "trailing garbage", body: `{"value":1}garbage`},
+		{name: "oversized trailing whitespace", body: `{"value":1}` + strings.Repeat(" ", 1<<20)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.body))
+			recorder := httptest.NewRecorder()
+			var value struct {
+				Value int `json:"value"`
+			}
+			if err := decode(recorder, request, &value); err == nil {
+				t.Fatal("decode unexpectedly accepted invalid body")
+			}
+		})
 	}
 }
 
@@ -239,8 +264,28 @@ type fakeCodexClient struct {
 	closes      int
 	calls       int
 	initErrors  []error
+	callError   error
 	initStarted chan struct{}
 	initRelease chan struct{}
+}
+
+type blockingSyncClient struct {
+	fakeCodexClient
+	accountReadStarted chan struct{}
+	releaseAccountRead chan struct{}
+}
+
+func (f *blockingSyncClient) Call(ctx context.Context, method string, params any, out any) error {
+	if method == "account/read" {
+		close(f.accountReadStarted)
+		select {
+		case <-f.releaseAccountRead:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return json.Unmarshal([]byte(`{"account":{"type":"chatgpt","email":"old@example.com","planType":"plus"}}`), out)
+	}
+	return f.fakeCodexClient.Call(ctx, method, params, out)
 }
 
 func (f *fakeCodexClient) Start(context.Context) error {
@@ -276,11 +321,125 @@ func (f *fakeCodexClient) Call(_ context.Context, method string, _ any, out any)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.callError != nil {
+		return f.callError
+	}
 	if method == "account/login/start" {
 		result := out.(*map[string]any)
 		*result = map[string]any{"verificationUrl": "https://example.test/device", "userCode": "ABCD-EFGH"}
 	}
 	return nil
+}
+
+func TestSyncFailureMarksExistingDashboardStale(t *testing.T) {
+	a := newReminderTestApp(t)
+	client := &fakeCodexClient{connected: true, callError: errors.New("account read failed")}
+	a.runtimes[1] = &accountRuntime{client: client, ready: true, dash: Dashboard{FetchedAt: 123}}
+	if err := a.syncAccount(context.Background(), 1); err == nil {
+		t.Fatal("sync unexpectedly succeeded")
+	}
+	a.runtimes[1].syncing.Lock()
+	dashboard := a.runtimes[1].dash
+	a.runtimes[1].syncing.Unlock()
+	if !dashboard.Stale || dashboard.LastError != "account read failed" || dashboard.FetchedAt != 123 {
+		t.Fatalf("dashboard = %#v", dashboard)
+	}
+}
+
+func TestLogoutWaitsForSyncAndKeepsAccountDisconnected(t *testing.T) {
+	a := newReminderTestApp(t)
+	client := &blockingSyncClient{fakeCodexClient: fakeCodexClient{connected: true}, accountReadStarted: make(chan struct{}), releaseAccountRead: make(chan struct{})}
+	a.runtimes[1] = &accountRuntime{client: client, ready: true, dash: Dashboard{Account: AccountView{Connected: true}}}
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- a.syncAccount(context.Background(), 1) }()
+	<-client.accountReadStarted
+	logoutDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		a.accountAPI(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/accounts/1/logout", nil), "accounts/1/logout")
+		logoutDone <- recorder
+	}()
+	select {
+	case <-logoutDone:
+		t.Fatal("logout completed before in-flight sync")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(client.releaseAccountRead)
+	if err := <-syncDone; err != nil {
+		t.Fatal(err)
+	}
+	if recorder := <-logoutDone; recorder.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var email *string
+	var connected bool
+	if err := a.store.DB.QueryRow("SELECT email,connected FROM accounts WHERE id=1").Scan(&email, &connected); err != nil {
+		t.Fatal(err)
+	}
+	if email != nil || connected || a.runtimes[1].dash.Account.Connected {
+		t.Fatalf("account remained connected: email=%v db=%v dashboard=%v", email, connected, a.runtimes[1].dash.Account.Connected)
+	}
+}
+
+func TestDeleteAccountCascadesQueuedNotifications(t *testing.T) {
+	a := newReminderTestApp(t)
+	account, err := a.store.CreateAccount("delete me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.runtimes[account.ID] = &accountRuntime{client: &fakeCodexClient{}}
+	for _, status := range []string{"pending", "failed", "staged"} {
+		_, err = a.store.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+			VALUES(?, 'configured', 'before', ?, 1, 'message', ?)`, fmt.Sprintf("%d:key:%s", account.ID, status), status, account.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	a.accountAPI(recorder, httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/accounts/%d", account.ID), nil), fmt.Sprintf("accounts/%d", account.ID))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var count int
+	if err = a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE account_id=?", account.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("notification count = %d, err = %v", count, err)
+	}
+}
+
+func TestDeleteAccountRestoresRuntimeWhenDatabaseDeleteFails(t *testing.T) {
+	a := newReminderTestApp(t)
+	account, err := a.store.CreateAccount("keep me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := &accountRuntime{client: &fakeCodexClient{}}
+	a.runtimes[account.ID] = original
+	if _, err = a.store.DB.Exec(`CREATE TABLE account_delete_blocker (
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT);
+		INSERT INTO account_delete_blocker(account_id) VALUES(?)`, account.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	a.accountAPI(recorder, httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v1/accounts/%d", account.ID), nil), fmt.Sprintf("accounts/%d", account.ID))
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var count int
+	if err = a.store.DB.QueryRow("SELECT COUNT(*) FROM accounts WHERE id=?", account.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("account count = %d, err = %v", count, err)
+	}
+	restored := a.runtime(account.ID)
+	if restored == nil || restored == original {
+		t.Fatalf("runtime was not restored: original=%p restored=%p", original, restored)
+	}
+	restored.stateMu.RLock()
+	stopped := restored.stopped
+	restored.stateMu.RUnlock()
+	if stopped {
+		t.Fatal("restored runtime is stopped")
+	}
 }
 
 func (f *fakeCodexClient) Close() error {

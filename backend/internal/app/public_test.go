@@ -140,6 +140,15 @@ func TestPublicOverviewStatusPrecedence(t *testing.T) {
 	}
 }
 
+func TestPublicOverviewMarksDisconnectedRuntimeStale(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.runtimes[1] = &accountRuntime{client: &fakeCodexClient{}, dash: Dashboard{FetchedAt: 1}}
+	account := store.Account{ID: 1, Connected: true, ActualKind: "personal"}
+	if got := a.publicConnection(account).Status; got != "stale" {
+		t.Fatalf("status = %q; want stale", got)
+	}
+}
+
 func TestPublicOverviewRejectsInvalidStateAndMethod(t *testing.T) {
 	a := newReminderTestApp(t)
 	recorder := httptest.NewRecorder()

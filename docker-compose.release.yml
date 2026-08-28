@@ -33,3 +33,4 @@ services:
       - "./data:/data"
     environment:
       LISTEN_ADDR: ":8080"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"

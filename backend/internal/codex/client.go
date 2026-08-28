@@ -16,6 +16,7 @@ import (
 
 type Client struct {
 	mu        sync.Mutex
+	writeMu   sync.Mutex
 	cmd       *exec.Cmd
 	in        io.WriteCloser
 	pending   map[int64]chan envelope
@@ -75,7 +76,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	if e := c.Call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "codex-helper", "title": "Codex Helper", "version": "0.1.0"}, "capabilities": map[string]any{}}, &out); e != nil {
 		return e
 	}
-	return c.send(map[string]any{"method": "initialized", "params": map[string]any{}})
+	return c.send(ctx, map[string]any{"method": "initialized", "params": map[string]any{}})
 }
 func (c *Client) read(cmd *exec.Cmd, r io.Reader) {
 	s := bufio.NewScanner(r)
@@ -97,16 +98,19 @@ func (c *Client) read(cmd *exec.Cmd, r io.Reader) {
 			go c.notify(e.Method, e.Params)
 		}
 	}
-	c.failAll(cmd)
+	c.failProcess(cmd, true)
 }
-func (c *Client) failAll(cmd *exec.Cmd) {
+func (c *Client) failAll(cmd *exec.Cmd) { c.failProcess(cmd, false) }
+
+func (c *Client) failProcess(cmd *exec.Cmd, kill bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	// A previous process may finish after its replacement has started. It must
 	// not mark the new connection as disconnected or fail its pending calls.
 	if c.cmd != cmd {
+		c.mu.Unlock()
 		return
 	}
+	in := c.in
 	c.connected = false
 	c.cmd = nil
 	c.in = nil
@@ -114,25 +118,94 @@ func (c *Client) failAll(cmd *exec.Cmd) {
 		ch <- envelope{Error: "app-server disconnected"}
 		delete(c.pending, id)
 	}
+	c.mu.Unlock()
+	if in != nil {
+		_ = in.Close()
+	}
+	if kill && cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
-func (c *Client) send(v any) error {
+
+func (c *Client) send(ctx context.Context, v any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.connected {
+		c.mu.Unlock()
 		return errors.New("app-server unavailable")
 	}
-	b, _ := json.Marshal(v)
-	b = append(b, '\n')
-	_, e := c.in.Write(b)
-	return e
+	cmd, in := c.cmd, c.in
+	c.mu.Unlock()
+
+	written := make(chan error, 1)
+	go func() {
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
+		c.mu.Lock()
+		current := c.connected && c.cmd == cmd && c.in == in
+		c.mu.Unlock()
+		if !current {
+			written <- errors.New("app-server unavailable")
+			return
+		}
+		written <- writeFull(in, b)
+	}()
+
+	timer := time.NewTimer(20 * time.Second)
+	defer timer.Stop()
+	select {
+	case err = <-written:
+		if err != nil {
+			c.failProcess(cmd, true)
+		}
+		return err
+	case <-ctx.Done():
+		c.failProcess(cmd, true)
+		<-written
+		return ctx.Err()
+	case <-timer.C:
+		c.failProcess(cmd, true)
+		<-written
+		return errors.New("app-server timeout")
+	}
 }
+
+func writeFull(w io.Writer, b []byte) error {
+	for len(b) > 0 {
+		n, err := w.Write(b)
+		if err != nil {
+			return err
+		}
+		if n <= 0 || n > len(b) {
+			return io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return nil
+}
+
 func (c *Client) Call(ctx context.Context, method string, params any, out any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	id := c.id.Add(1)
 	ch := make(chan envelope, 1)
 	c.mu.Lock()
 	c.pending[id] = ch
 	c.mu.Unlock()
-	if e := c.send(map[string]any{"id": id, "method": method, "params": params}); e != nil {
+	if e := c.send(callCtx, map[string]any{"id": id, "method": method, "params": params}); e != nil {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return e
 	}
 	select {
@@ -144,21 +217,20 @@ func (c *Client) Call(ctx context.Context, method string, params any, out any) e
 			return json.Unmarshal(e.Result, out)
 		}
 		return nil
-	case <-ctx.Done():
+	case <-callCtx.Done():
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		return ctx.Err()
-	case <-time.After(20 * time.Second):
-		c.mu.Lock()
-		delete(c.pending, id)
-		c.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return errors.New("app-server timeout")
 	}
 }
 func (c *Client) Close() error {
 	c.mu.Lock()
 	cmd := c.cmd
+	in := c.in
 	c.cmd = nil
 	c.in = nil
 	c.connected = false
@@ -167,6 +239,9 @@ func (c *Client) Close() error {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	if in != nil {
+		_ = in.Close()
+	}
 	if cmd != nil && cmd.Process != nil {
 		return cmd.Process.Kill()
 	}
