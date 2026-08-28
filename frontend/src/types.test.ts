@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError, toErrorMessage } from "./api";
 import {
   decodeAction,
+  decodeAccount,
   decodeAuthProfile,
   decodeDashboard,
   decodeDeviceLogin,
@@ -77,6 +78,25 @@ describe("API decoders", () => {
     ).toThrow("theme格式无效");
   });
 
+  it("要求账号更新时间为有限数值", () => {
+    const account = {
+      id: 1,
+      displayName: "默认账号",
+      email: null,
+      planType: null,
+      expectedKind: "any",
+      actualKind: "unknown",
+      validationStatus: "pending",
+      possibleDuplicate: false,
+      connected: false,
+      updatedAt: 100,
+    };
+    expect(decodeAccount(account).updatedAt).toBe(100);
+    expect(() => decodeAccount({ ...account, updatedAt: Number.NaN })).toThrow(
+      "updatedAt格式无效",
+    );
+  });
+
   it("解码脱敏的公开总览并拒绝未知状态", () => {
     const response = {
       cards: [
@@ -124,12 +144,21 @@ describe("API decoders", () => {
   it("只接受 HTTPS 设备授权地址", () => {
     expect(() =>
       decodeDeviceLogin({
+        loginId: "",
+        verificationUrl: "https://example.com",
+        userCode: "ABC",
+      }),
+    ).toThrow("loginId格式无效");
+    expect(() =>
+      decodeDeviceLogin({
+        loginId: "login-1",
         verificationUrl: "http://example.com",
         userCode: "ABC",
       }),
     ).toThrow("HTTPS");
     expect(
       decodeDeviceLogin({
+        loginId: "login-1",
         verificationUrl: "https://example.com",
         userCode: "ABC",
       }).userCode,

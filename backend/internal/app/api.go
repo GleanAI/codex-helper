@@ -248,6 +248,13 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		rt.syncing.Unlock()
 	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "POST":
 		a.deviceLogin(w, r, id)
+	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "GET":
+		loginID := r.URL.Query().Get("loginId")
+		if loginID == "" {
+			jsonOut(w, 400, map[string]string{"error": "loginId 不能为空"})
+			return
+		}
+		jsonOut(w, 200, map[string]string{"status": rt.deviceLoginResult(loginID)})
 	case action == "logout" && r.Method == "POST":
 		rt.syncing.Lock()
 		defer rt.syncing.Unlock()
@@ -646,7 +653,12 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, g)
 }
 func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
-	var out map[string]any
+	var out struct {
+		Type            string `json:"type"`
+		LoginID         string `json:"loginId"`
+		VerificationURL string `json:"verificationUrl"`
+		UserCode        string `json:"userCode"`
+	}
 	rt := a.runtime(id)
 	if rt == nil {
 		jsonOut(w, 404, map[string]string{"error": "账号不存在"})
@@ -660,6 +672,11 @@ func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
 		jsonOut(w, 502, map[string]string{"error": e.Error()})
 		return
 	}
+	if out.LoginID == "" || out.VerificationURL == "" || out.UserCode == "" {
+		jsonOut(w, 502, map[string]string{"error": "设备码登录响应不完整"})
+		return
+	}
+	rt.startDeviceLogin(out.LoginID)
 	jsonOut(w, 200, out)
 }
 

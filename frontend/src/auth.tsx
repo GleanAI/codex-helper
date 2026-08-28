@@ -75,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   if (state.status === "loading")
     return (
       <main className="center">
-        <div className="spinner" />
+        <div className="spinner" role="status" aria-label="正在启动应用" />
       </main>
     );
   if (state.status === "error")
@@ -83,7 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       <main className="center">
         <section className="panel form">
           <h2>无法启动应用</h2>
-          <p className="error">{state.message}</p>
+          <p className="error" role="alert">
+            {state.message}
+          </p>
           <button onClick={() => void load()}>重试</button>
         </section>
       </main>

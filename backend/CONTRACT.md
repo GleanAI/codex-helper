@@ -82,6 +82,7 @@
 | `PUT /api/v1/accounts/{id}` | body `{displayName,expectedKind?}`；名称不能为空，省略类型时保留旧值；成功时同时更新内存 Dashboard 中的显示名，并返回 `200 {ok:true}`。 |
 | `DELETE /api/v1/accounts/{id}` | 停止该账号进程并等待在途同步退出，删除账号及级联用量、限额和通知历史，再删除对应凭据目录；成功返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/login/device` | 启动并初始化 app-server，调用 `account/login/start` 的 `chatgptDeviceCode` 流程；返回含 `verificationUrl`、`userCode` 和 `loginId` 的结果。 |
+| `GET /api/v1/accounts/{id}/login/device?loginId={loginId}` | 查询指定设备码登录尝试；仅与当前尝试的 `loginId` 精确匹配时返回其 `pending`、`completed` 或 `failed` 状态，已被新尝试替代的 ID 返回 `superseded`。`completed` 只由对应的 app-server `account/login/completed` 成功通知触发。缺少 `loginId` 返回 400。 |
 | `POST /api/v1/accounts/{id}/logout` | 与该账号同步串行执行，调用 `account/logout`，清除该槽位可从官方源恢复的每日用量缓存，并将连接状态置为 false；返回 `200 {ok:true}`。 |
 | `POST /api/v1/accounts/{id}/sync` | 同步指定账号；成功 `200 {ok:true}`，上游失败 502。 |
 | `任意方法 /api/v1/dashboard?accountId={id}` | 返回内存中的 `Dashboard`；非 `GET`/`HEAD` 还需来源头。省略或无效的零值 ID 使用账号 1，前端使用 `GET`。`usage` 按日期升序，从保留期内首个已保存官方日桶连续到配置时区的今天，缺失日期返回 `totalTokens:0`；没有官方日桶时返回空数组。 |

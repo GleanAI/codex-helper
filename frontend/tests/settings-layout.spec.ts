@@ -28,6 +28,7 @@ const responses: Record<string, unknown> = {
       validationStatus: "matched",
       possibleDuplicate: false,
       connected: true,
+      updatedAt: 100,
     },
   ],
   "settings/telegram": {
@@ -193,6 +194,27 @@ test("login hides the build version and links back to the public page", async ({
 
   await publicPage.click();
   await expect(page).toHaveURL(/\/$/);
+});
+
+test("login errors are exposed as an alert", async ({ page }) => {
+  await page.route("**/api/v1/**", (route) => {
+    const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
+    if (key === "system/status")
+      return route.fulfill({
+        json: { initialized: true, appServer: false, version: "test" },
+      });
+    if (key === "auth/me" || key === "auth/login")
+      return route.fulfill({
+        status: 401,
+        json: { error: "用户名或密码错误" },
+      });
+    return route.fulfill({ status: 404, json: { error: "接口不存在" } });
+  });
+
+  await page.goto("/login");
+  await page.getByLabel("密码").fill("wrong-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.getByRole("alert")).toHaveText("用户名或密码错误");
 });
 
 test("shows the GitHub link after login", async ({ page }) => {
@@ -1086,11 +1108,12 @@ test("automatically enables Telegram features and removes the configuration", as
   await page.getByRole("button", { name: "验证并保存" }).click();
   await expect.poll(() => savedBody?.enabled).toBe(true);
   expect(savedBody?.menuEnabled).toBe(true);
+  await expect(page.getByRole("status")).toHaveText("Bot 已验证并保存");
 
   await page.getByRole("button", { name: "解除绑定" }).click();
   await expect.poll(() => deleted).toBe(true);
   await expect(page.getByRole("button", { name: "解除绑定" })).toBeDisabled();
-  await expect(page.getByText("Telegram Bot 配置已删除")).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("Telegram Bot 配置已删除");
 });
 
 async function layout(page: Page) {
@@ -1185,7 +1208,7 @@ test("updates administrator credentials and clears password fields", async ({
     .fill("replacement-password");
   await panel.getByLabel("确认新密码").fill("different-password");
   await panel.getByRole("button", { name: "更新登录凭据" }).click();
-  await expect(panel.getByText("两次输入的新密码不一致")).toBeVisible();
+  await expect(panel.getByRole("alert")).toHaveText("两次输入的新密码不一致");
   expect(savedBody).toBeUndefined();
 
   await panel.getByLabel("确认新密码").fill("replacement-password");
@@ -1196,9 +1219,9 @@ test("updates administrator credentials and clears password fields", async ({
     currentPassword: "current-password",
     newPassword: "replacement-password",
   });
-  await expect(
-    panel.getByText("登录凭据已更新，其他设备需要重新登录"),
-  ).toBeVisible();
+  await expect(panel.getByRole("status")).toHaveText(
+    "登录凭据已更新，其他设备需要重新登录",
+  );
   await expect(panel.getByLabel("当前密码")).toHaveValue("");
   await expect(panel.getByLabel("新密码", { exact: true })).toHaveValue("");
   await expect(panel.getByLabel("确认新密码")).toHaveValue("");
@@ -1247,13 +1270,16 @@ test("deleting a newly added account clears its device authorization", async ({
       accounts = [account];
       return route.fulfill({ json: account });
     }
-    if (key === "accounts/2/login/device")
+    if (key === "accounts/2/login/device" && request.method() === "POST")
       return route.fulfill({
         json: {
+          loginId: "new-account-login",
           verificationUrl: "https://auth.openai.com/codex/device",
           userCode: "PLTJ-7M6I6",
         },
       });
+    if (key === "accounts/2/login/device" && request.method() === "GET")
+      return route.fulfill({ json: { status: "pending" } });
     if (key === "accounts/2" && request.method() === "DELETE") {
       accounts = [];
       return route.fulfill({ json: { ok: true } });
@@ -1279,6 +1305,60 @@ test("deleting a newly added account clears its device authorization", async ({
   ).toBeVisible();
 });
 
+test("re-authorizing ignores unrelated account updates until this login completes", async ({
+  page,
+}) => {
+  let deviceStarted = false;
+  let statusReads = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const key = new URL(request.url()).pathname.replace("/api/v1/", "");
+    if (key === "accounts" && request.method() === "GET") {
+      return route.fulfill({
+        json: [
+          {
+            ...responses.accounts[0],
+            updatedAt: deviceStarted ? 101 : 100,
+            displayName: deviceStarted ? "后台同步已更新" : "默认账号",
+            email: deviceStarted ? "second@example.com" : "test@example.com",
+            planType: deviceStarted ? "pro" : "plus",
+          },
+        ],
+      });
+    }
+    if (key === "accounts/1/login/device" && request.method() === "POST") {
+      deviceStarted = true;
+      return route.fulfill({
+        json: {
+          loginId: "reauth-login",
+          verificationUrl: "https://auth.openai.com/codex/device",
+          userCode: "NEW-CODE",
+        },
+      });
+    }
+    if (key === "accounts/1/login/device" && request.method() === "GET") {
+      expect(new URL(request.url()).searchParams.get("loginId")).toBe(
+        "reauth-login",
+      );
+      statusReads += 1;
+      return route.fulfill({
+        json: { status: statusReads >= 3 ? "completed" : "pending" },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Codex" }).click();
+  await page.getByRole("button", { name: "设备码登录" }).click();
+  await expect(page.getByText("NEW-CODE")).toBeVisible();
+  await expect.poll(() => statusReads, { timeout: 7_000 }).toBe(2);
+  await expect(page.getByText("NEW-CODE")).toBeVisible();
+  await expect(page.getByText("NEW-CODE")).toHaveCount(0);
+  await expect(page.locator(".account-meta").first()).toContainText("Pro");
+  await expect(page.locator("body")).not.toContainText("second@example.com");
+});
+
 test("Codex account cards fit within the viewport", async ({ page }) => {
   await openSettings(page);
   await page.getByRole("tab", { name: "Codex" }).click();
@@ -1293,6 +1373,32 @@ test("Codex account cards fit within the viewport", async ({ page }) => {
   }));
   expect(overflow.documentWidth).toBeLessThanOrEqual(overflow.viewportWidth);
   expect(overflow.cardWidth).toBeLessThanOrEqual(overflow.contentWidth);
+});
+
+test("failed account edits are reported and restored", async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const key = new URL(request.url()).pathname.replace("/api/v1/", "");
+    if (key === "accounts/1" && request.method() === "PUT")
+      return route.fulfill({ status: 500, json: { error: "保存失败" } });
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("tab", { name: "Codex" }).click();
+  const name = page.getByRole("textbox", { name: "连接名称" });
+  await name.fill("未保存名称");
+  await name.press("Tab");
+  await expect(page.getByRole("alert")).toHaveText("保存失败");
+  await expect(name).toHaveValue("默认账号");
+
+  const kind = page.getByRole("combobox", { name: "预期连接类型" });
+  await kind.selectOption("team");
+  await expect(page.getByRole("alert")).toHaveText("保存失败");
+  await expect(kind).toHaveValue("personal");
+  expect(pageErrors).toEqual([]);
 });
 
 test("shows regular and monthly limits in one balance panel", async ({
@@ -1571,4 +1677,61 @@ test("a slow previous account response cannot replace the selected account", asy
   await page.waitForTimeout(350);
   await expect(page.locator(".balance .badge")).toHaveText("Pro");
   await expect(page.locator(".balance .badge")).not.toHaveText("Plus");
+});
+
+test("switching accounts cancels an in-flight manual sync result", async ({
+  page,
+}) => {
+  const accounts = [
+    responses.accounts[0],
+    {
+      ...responses.accounts[0],
+      id: 2,
+      displayName: "第二账号",
+      email: "second@example.com",
+      planType: "pro",
+    },
+  ];
+  let syncRequests = 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const key = requestUrl.pathname.replace("/api/v1/", "");
+    if (key === "accounts") return route.fulfill({ json: accounts });
+    if (key === "accounts/1/sync") {
+      syncRequests += 1;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return route.fulfill({ json: { ok: true } });
+    }
+    if (key === "dashboard") {
+      const accountId = Number(requestUrl.searchParams.get("accountId"));
+      return route.fulfill({
+        json: {
+          accountId,
+          displayName: accountId === 1 ? "默认账号" : "第二账号",
+          account: {
+            email: accountId === 1 ? "test@example.com" : "second@example.com",
+            planType: accountId === 1 ? "plus" : "pro",
+            connected: true,
+          },
+          limits: [],
+          summary: {},
+          usage: [],
+          fetchedAt: 0,
+          stale: false,
+        },
+      });
+    }
+    return route.fulfill({ json: responses[key] ?? {} });
+  });
+
+  await page.goto("/details");
+  const selector = page.getByRole("combobox", { name: "选择 Codex 账号" });
+  await expect(page.locator(".balance .badge")).toHaveText("Plus");
+  await page.getByRole("button", { name: "立即刷新" }).click();
+  await expect.poll(() => syncRequests).toBe(1);
+  await selector.selectOption("2");
+  await expect(page.locator(".balance .badge")).toHaveText("Pro");
+  await page.waitForTimeout(400);
+  await expect(page.locator(".balance .badge")).toHaveText("Pro");
+  await expect(page.getByRole("button", { name: "立即刷新" })).toBeEnabled();
 });

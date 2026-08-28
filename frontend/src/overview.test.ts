@@ -12,6 +12,7 @@ const account = (overrides: Partial<Account>): Account => ({
   validationStatus: "matched",
   possibleDuplicate: false,
   connected: true,
+  updatedAt: 100,
   ...overrides,
 });
 

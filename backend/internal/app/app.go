@@ -47,14 +47,17 @@ type App struct {
 	telegramMu     sync.Mutex
 }
 type accountRuntime struct {
-	client     codexClient
-	processCtx context.Context
-	dash       Dashboard
-	syncing    sync.Mutex
-	lifecycle  sync.Mutex
-	stateMu    sync.RWMutex
-	ready      bool
-	stopped    bool
+	client            codexClient
+	processCtx        context.Context
+	dash              Dashboard
+	syncing           sync.Mutex
+	lifecycle         sync.Mutex
+	stateMu           sync.RWMutex
+	deviceLoginMu     sync.RWMutex
+	deviceLoginID     string
+	deviceLoginStatus string
+	ready             bool
+	stopped           bool
 }
 
 type codexClient interface {
@@ -151,17 +154,69 @@ func (a *App) keepCodex() {
 	}
 }
 func (a *App) onCodexNotification(id int64) func(string, json.RawMessage) {
-	return func(method string, _ json.RawMessage) {
-		if method == "account/login/completed" || method == "account/updated" || method == "account/rateLimits/updated" {
-			go a.syncAccountWithRetry(id, method == "account/login/completed")
+	return func(method string, params json.RawMessage) {
+		if method == "account/login/completed" {
+			var completed struct {
+				LoginID string `json:"loginId"`
+				Success bool   `json:"success"`
+			}
+			if json.Unmarshal(params, &completed) == nil && completed.LoginID != "" {
+				rt := a.runtime(id)
+				if rt == nil || rt.deviceLoginResult(completed.LoginID) == "superseded" {
+					return
+				}
+				if !completed.Success {
+					rt.finishDeviceLogin(completed.LoginID, "failed")
+					return
+				}
+				rt.finishDeviceLogin(completed.LoginID, "completed")
+				go func() {
+					a.syncAccountWithRetry(id, true)
+				}()
+				return
+			}
+			go a.syncAccountWithRetry(id, true)
+			return
+		}
+		if method == "account/updated" || method == "account/rateLimits/updated" {
+			go a.syncAccountWithRetry(id, false)
 		}
 	}
+}
+
+func (rt *accountRuntime) startDeviceLogin(loginID string) {
+	rt.deviceLoginMu.Lock()
+	rt.deviceLoginID = loginID
+	rt.deviceLoginStatus = "pending"
+	rt.deviceLoginMu.Unlock()
+}
+
+func (rt *accountRuntime) finishDeviceLogin(loginID, status string) {
+	rt.deviceLoginMu.Lock()
+	if rt.deviceLoginID == loginID {
+		rt.deviceLoginStatus = status
+	}
+	rt.deviceLoginMu.Unlock()
+}
+
+func (rt *accountRuntime) deviceLoginResult(loginID string) string {
+	rt.deviceLoginMu.RLock()
+	defer rt.deviceLoginMu.RUnlock()
+	if rt.deviceLoginID != loginID {
+		return "superseded"
+	}
+	return rt.deviceLoginStatus
 }
 
 func (a *App) syncAccountWithRetry(id int64, requireClassifiedAccount bool) {
 	delays := []time.Duration{0, time.Second, 3 * time.Second}
 	var err error
 	for _, delay := range delays {
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+		}
 		if delay > 0 {
 			select {
 			case <-a.ctx.Done():

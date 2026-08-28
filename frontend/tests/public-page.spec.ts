@@ -155,6 +155,7 @@ test("公开页读取失败后允许手动重试", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "暂时无法读取公开用量" }),
   ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText("暂不可用");
   await page.getByRole("button", { name: "重新加载" }).click();
   await expect(page.locator(".public-usage-card")).toBeVisible();
   expect(requests).toBe(2);

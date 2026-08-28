@@ -115,18 +115,26 @@ export default function PublicPage({
       </header>
 
       <main className="public-main">
-        {error && overview && <div className="public-banner">{error}</div>}
+        {error && overview && (
+          <div className="public-banner" role="alert">
+            {error}
+          </div>
+        )}
         {!overview ? (
           error ? (
             <section className="public-state-card">
               <h2>暂时无法读取公开用量</h2>
-              <p>{error}</p>
+              <p role="alert">{error}</p>
               <button onClick={() => setRetry((value) => value + 1)}>
                 重新加载
               </button>
             </section>
           ) : (
-            <section className="public-loading" aria-label="正在加载公开用量">
+            <section
+              className="public-loading"
+              role="status"
+              aria-label="正在加载公开用量"
+            >
               <div className="spinner" />
               <p>正在读取最新用量…</p>
             </section>

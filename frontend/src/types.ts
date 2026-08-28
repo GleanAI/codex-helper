@@ -33,12 +33,16 @@ export interface Account {
   validationStatus: ValidationStatus;
   possibleDuplicate: boolean;
   connected: boolean;
+  updatedAt: number;
 }
 export interface DeviceLogin {
   accountId: number;
+  loginId: string;
   verificationUrl: string;
   userCode: string;
 }
+export type DeviceLoginStatus =
+  "pending" | "completed" | "failed" | "superseded";
 export interface Limit {
   limitId: string;
   limitName: string | null;
@@ -182,6 +186,7 @@ export const decodeAccount: Decoder<Account> = (value) => {
     ),
     possibleDuplicate: boolean(x.possibleDuplicate, "possibleDuplicate"),
     connected: boolean(x.connected, "connected"),
+    updatedAt: number(x.updatedAt, "updatedAt"),
   };
 };
 export const decodeAccounts: Decoder<Account[]> = (value) => {
@@ -370,7 +375,9 @@ export const decodeDeviceLogin: Decoder<Omit<DeviceLogin, "accountId">> = (
   value,
 ) => {
   const x = record(value),
+    loginId = string(x.loginId, "loginId"),
     verificationUrl = string(x.verificationUrl, "verificationUrl");
+  if (loginId === "") throw new Error("loginId格式无效");
   let url: URL;
   try {
     url = new URL(verificationUrl);
@@ -378,7 +385,23 @@ export const decodeDeviceLogin: Decoder<Omit<DeviceLogin, "accountId">> = (
     throw new Error("设备授权地址无效");
   }
   if (url.protocol !== "https:") throw new Error("设备授权地址必须使用 HTTPS");
-  return { verificationUrl, userCode: string(x.userCode, "userCode") };
+  return {
+    loginId,
+    verificationUrl,
+    userCode: string(x.userCode, "userCode"),
+  };
+};
+export const decodeDeviceLoginStatus: Decoder<{
+  status: DeviceLoginStatus;
+}> = (value) => {
+  const x = record(value);
+  return {
+    status: enumValue(
+      x.status,
+      ["pending", "completed", "failed", "superseded"],
+      "status",
+    ),
+  };
 };
 export const decodeOK: Decoder<{ ok: boolean }> = (value) => {
   const x = record(value);

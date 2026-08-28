@@ -44,6 +44,7 @@ import {
   decodeCode,
   decodeDashboard,
   decodeDeviceLogin,
+  decodeDeviceLoginStatus,
   decodeGeneral,
   decodeOK,
   decodeSMTP,
@@ -65,6 +66,7 @@ import "./styles.css";
 
 const UsageChart = lazy(() => import("./usage-chart"));
 const repositoryURL = "https://github.com/GleanAI/codex-helper";
+type FeedbackMessage = { kind: "success" | "error"; text: string };
 
 function GitHubLink({ className = "" }: { className?: string }) {
   return (
@@ -121,7 +123,7 @@ function AppRoutes() {
   );
 }
 const Splash = () => (
-  <main className="center">
+  <main className="center" role="status" aria-label="正在加载页面">
     <div className="logo">
       <Zap /> Codex Helper
     </div>
@@ -195,7 +197,11 @@ function Setup({ version }: { version: string }) {
             onChange={(e) => set({ ...form, timezone: e.target.value })}
           />
         </label>
-        {err && <p className="error">{err}</p>}
+        {err && (
+          <p className="error" role="alert">
+            {err}
+          </p>
+        )}
         <button>完成初始化</button>
         <p className="hint">
           Codex、Telegram 与 SMTP 可在进入系统后通过设置中心完成。
@@ -237,7 +243,11 @@ function Login() {
             onChange={(x) => setP(x.target.value)}
           />
         </label>
-        {e && <p className="error">{e}</p>}
+        {e && (
+          <p className="error" role="alert">
+            {e}
+          </p>
+        )}
         <button>登录</button>
         <Link className="login-public-link" to="/">
           <ArrowLeft />
@@ -326,12 +336,20 @@ function Shell({ version }: { version: string }) {
           <button onClick={changeTheme}>
             {theme === "dark" ? <Sun /> : <Moon />}切换主题
           </button>
-          {themeError && <small className="error">{themeError}</small>}
+          {themeError && (
+            <small className="error" role="alert">
+              {themeError}
+            </small>
+          )}
           <button onClick={signOut}>
             <LogOut />
             退出
           </button>
-          {shellError && <small className="error">{shellError}</small>}
+          {shellError && (
+            <small className="error" role="alert">
+              {shellError}
+            </small>
+          )}
         </div>
       </aside>
       <div className="mobile-topbar">
@@ -359,7 +377,9 @@ function Shell({ version }: { version: string }) {
                 退出
               </button>
               {(themeError || shellError) && (
-                <small className="error">{themeError || shellError}</small>
+                <small className="error" role="alert">
+                  {themeError || shellError}
+                </small>
               )}
             </div>
           )}
@@ -474,7 +494,9 @@ function OverviewPage() {
         <Header title="用量总览" />
         {error ? (
           <div className="panel empty">
-            <p className="error">{error}</p>
+            <p className="error" role="alert">
+              {error}
+            </p>
             <button onClick={() => setRetry((value) => value + 1)}>重试</button>
           </div>
         ) : (
@@ -493,7 +515,11 @@ function OverviewPage() {
   return (
     <>
       <Header title="用量总览" />
-      {error && <div className="banner">{error}</div>}
+      {error && (
+        <div className="banner" role="alert">
+          {error}
+        </div>
+      )}
       <div className="overview-grid">
         {groupAccounts(accounts).map((group) => (
           <OverviewGroupCard group={group} key={group.key} />
@@ -725,6 +751,19 @@ function DetailsPage() {
     [refresh, setRefresh] = useState<"idle" | "loading" | "done">("idle");
   const requestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const selectedIdRef = useRef(id);
+  const syncAbortRef = useRef<AbortController | null>(null);
+  const syncRequestRef = useRef(0);
+  const refreshTimerRef = useRef(0);
+  const selectAccount = (next: number) => {
+    if (next === selectedIdRef.current) return;
+    selectedIdRef.current = next;
+    syncRequestRef.current += 1;
+    syncAbortRef.current?.abort();
+    window.clearTimeout(refreshTimerRef.current);
+    setRefresh("idle");
+    setId(next);
+  };
   const loadAccounts = async (signal?: AbortSignal, eventual = false) => {
     try {
       const xs = await (eventual ? getEventually : get)(
@@ -734,8 +773,11 @@ function DetailsPage() {
       );
       setAccounts(xs);
       setE("");
-      const next = xs.some((x) => x.id === id) ? id : xs[0]?.id || 0;
-      if (next !== id) setId(next);
+      const currentId = selectedIdRef.current;
+      const next = xs.some((x) => x.id === currentId)
+        ? currentId
+        : xs[0]?.id || 0;
+      if (next !== currentId) selectAccount(next);
     } catch (error) {
       if (!signal?.aborted) setE(toErrorMessage(error));
     }
@@ -753,7 +795,11 @@ function DetailsPage() {
         decodeDashboard,
         signal,
       );
-      if (request === requestRef.current && dashboard.accountId === accountId) {
+      if (
+        request === requestRef.current &&
+        dashboard.accountId === accountId &&
+        selectedIdRef.current === accountId
+      ) {
         setD(dashboard);
         setE("");
       }
@@ -765,7 +811,11 @@ function DetailsPage() {
   useEffect(() => {
     const controller = new AbortController();
     void loadAccounts(controller.signal, true);
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      syncAbortRef.current?.abort();
+      window.clearTimeout(refreshTimerRef.current);
+    };
   }, []);
   useEffect(() => {
     if (!id) return;
@@ -816,16 +866,50 @@ function DetailsPage() {
     };
   }, [id]);
   const sync = async () => {
+    const accountId = selectedIdRef.current;
+    const request = ++syncRequestRef.current;
+    const controller = new AbortController();
+    syncAbortRef.current?.abort();
+    syncAbortRef.current = controller;
+    window.clearTimeout(refreshTimerRef.current);
     setRefresh("loading");
     setE("");
     try {
-      await post(`accounts/${id}/sync`, decodeOK, {}, undefined, 60_000);
-      await load(id);
+      await post(
+        `accounts/${accountId}/sync`,
+        decodeOK,
+        {},
+        controller.signal,
+        60_000,
+      );
+      if (
+        controller.signal.aborted ||
+        request !== syncRequestRef.current ||
+        selectedIdRef.current !== accountId
+      )
+        return;
+      await load(accountId, controller.signal);
+      if (
+        controller.signal.aborted ||
+        request !== syncRequestRef.current ||
+        selectedIdRef.current !== accountId
+      )
+        return;
       setRefresh("done");
-      window.setTimeout(() => setRefresh("idle"), 2000);
+      refreshTimerRef.current = window.setTimeout(() => {
+        if (
+          request === syncRequestRef.current &&
+          selectedIdRef.current === accountId
+        )
+          setRefresh("idle");
+      }, 2000);
     } catch (x) {
+      if (controller.signal.aborted || request !== syncRequestRef.current)
+        return;
       setE(toErrorMessage(x));
       setRefresh("idle");
+    } finally {
+      if (syncAbortRef.current === controller) syncAbortRef.current = null;
     }
   };
   if (accounts === null)
@@ -834,7 +918,9 @@ function DetailsPage() {
         <Header title="用量详情" />
         {e ? (
           <div className="panel empty">
-            <p className="error">{e}</p>
+            <p className="error" role="alert">
+              {e}
+            </p>
             <button onClick={() => void loadAccounts()}>重试</button>
           </div>
         ) : (
@@ -855,7 +941,9 @@ function DetailsPage() {
         <Header title="用量详情" />
         {e ? (
           <div className="panel empty">
-            <p className="error">{e}</p>
+            <p className="error" role="alert">
+              {e}
+            </p>
             <button onClick={() => void load(id)}>重试</button>
           </div>
         ) : (
@@ -876,7 +964,8 @@ function DetailsPage() {
           <select
             className="account-select"
             value={id}
-            onChange={(x) => setId(+x.target.value)}
+            aria-label="选择 Codex 账号"
+            onChange={(x) => selectAccount(+x.target.value)}
           >
             {accounts.map((x) => (
               <option key={x.id} value={x.id}>
@@ -894,9 +983,18 @@ function DetailsPage() {
           >
             {refresh === "done" ? <Check /> : <RefreshCw />}
           </button>
+          {refresh !== "idle" && (
+            <span className="sr-only" role="status">
+              {refreshLabel}
+            </span>
+          )}
         </div>
       </Header>
-      {e && <div className="banner">{e}</div>}
+      {e && (
+        <div className="banner" role="alert">
+          {e}
+        </div>
+      )}
       <BalancePanel
         limits={d.limits}
         monthlyCreditLimit={d.monthlyCreditLimit}
@@ -1171,7 +1269,9 @@ function SecuritySettings() {
   if (!savedUsername && isError)
     return (
       <div className="panel wide">
-        <p className="error">{message}</p>
+        <p className="error" role="alert">
+          {message}
+        </p>
         <button onClick={() => void loadProfile()}>重试</button>
       </div>
     );
@@ -1256,13 +1356,20 @@ function SecuritySettings() {
       <button disabled={!changed || saving}>
         {saving ? "正在保存…" : "更新登录凭据"}
       </button>
-      {message && <p className={isError ? "error" : "hint"}>{message}</p>}
+      {message && (
+        <p
+          className={isError ? "error" : "hint"}
+          role={isError ? "alert" : "status"}
+        >
+          {message}
+        </p>
+      )}
     </form>
   );
 }
 function General() {
   const [v, setV] = useState<GeneralSettings | null>(null),
-    [msg, setMsg] = useState(""),
+    [msg, setMsg] = useState<FeedbackMessage | null>(null),
     [loadError, setLoadError] = useState("");
   const { applyTheme } = useTheme();
   const loadGeneral = async (signal?: AbortSignal, eventual = false) => {
@@ -1287,7 +1394,9 @@ function General() {
   if (!v)
     return loadError ? (
       <div className="panel wide">
-        <p className="error">{loadError}</p>
+        <p className="error" role="alert">
+          {loadError}
+        </p>
         <button onClick={() => void loadGeneral()}>重试</button>
       </div>
     ) : (
@@ -1305,9 +1414,9 @@ function General() {
           });
           setV(saved);
           applyTheme(saved.theme);
-          setMsg("设置已保存");
+          setMsg({ kind: "success", text: "设置已保存" });
         } catch (x) {
-          setMsg(toErrorMessage(x));
+          setMsg({ kind: "error", text: toErrorMessage(x) });
         }
       }}
     >
@@ -1382,7 +1491,14 @@ function General() {
         </label>
       </div>
       <button>保存设置</button>
-      {msg && <p className="hint">{msg}</p>}
+      {msg && (
+        <p
+          className={msg.kind === "error" ? "error" : "hint"}
+          role={msg.kind === "error" ? "alert" : "status"}
+        >
+          {msg.text}
+        </p>
+      )}
     </form>
   );
 }
@@ -1392,7 +1508,10 @@ function CodexSettings() {
     [active, setActive] = useState(0),
     [newKind, setNewKind] = useState<"personal" | "team">("team"),
     [busy, setBusy] = useState(false),
+    [accountSaving, setAccountSaving] = useState(0),
+    [nameDrafts, setNameDrafts] = useState<Record<number, string>>({}),
     [err, setErr] = useState("");
+  const dirtyNameIdsRef = useRef(new Set<number>());
   const load = async (signal?: AbortSignal, eventual = false) => {
     const accounts = await (eventual ? getEventually : get)(
       "accounts",
@@ -1400,6 +1519,20 @@ function CodexSettings() {
       signal,
     );
     setXs(accounts);
+    const accountIds = new Set(accounts.map((account) => account.id));
+    for (const accountId of dirtyNameIdsRef.current) {
+      if (!accountIds.has(accountId)) dirtyNameIdsRef.current.delete(accountId);
+    }
+    setNameDrafts((current) =>
+      Object.fromEntries(
+        accounts.map((account) => [
+          account.id,
+          dirtyNameIdsRef.current.has(account.id)
+            ? (current[account.id] ?? account.displayName)
+            : account.displayName,
+        ]),
+      ),
+    );
     return accounts;
   };
   useEffect(() => {
@@ -1415,16 +1548,30 @@ function CodexSettings() {
     const controller = new AbortController();
     let timer = 0;
     const poll = async () => {
+      if (Date.now() - started >= 120_000) {
+        setErr("设备码登录检测已超时，请重新生成设备码");
+        setDeviceLogin(null);
+        return;
+      }
       try {
-        const accounts = await load(controller.signal, true);
-        const account = accounts.find((x) => x.id === deviceLogin.accountId);
-        if (!account) {
+        const result = await getEventually(
+          `accounts/${deviceLogin.accountId}/login/device?loginId=${encodeURIComponent(deviceLogin.loginId)}`,
+          decodeDeviceLoginStatus,
+          controller.signal,
+        );
+        if (result.status === "completed") {
+          await load(controller.signal, true);
+          setErr("");
           setDeviceLogin(null);
           return;
         }
-        if (["matched", "mismatch"].includes(account.validationStatus)) return;
-        if (Date.now() - started >= 120_000) {
-          setErr("设备码登录检测已超时，请重新生成设备码");
+        if (result.status === "failed" || result.status === "superseded") {
+          setErr(
+            result.status === "failed"
+              ? "设备码登录失败，请重新生成设备码"
+              : "设备码已被新的登录尝试替代",
+          );
+          setDeviceLogin(null);
           return;
         }
         timer = window.setTimeout(poll, 2000);
@@ -1442,6 +1589,7 @@ function CodexSettings() {
     };
   }, [deviceLogin]);
   const login = async (id: number) => {
+    if (!xs.some((candidate) => candidate.id === id)) return;
     try {
       setBusy(true);
       setActive(id);
@@ -1454,7 +1602,10 @@ function CodexSettings() {
         undefined,
         60_000,
       );
-      setDeviceLogin({ accountId: id, ...result });
+      setDeviceLogin({
+        accountId: id,
+        ...result,
+      });
     } catch (q) {
       setErr(toErrorMessage(q));
     } finally {
@@ -1480,7 +1631,10 @@ function CodexSettings() {
         undefined,
         60_000,
       );
-      setDeviceLogin({ accountId: x.id, ...result });
+      setDeviceLogin({
+        accountId: x.id,
+        ...result,
+      });
     } catch (q) {
       setErr(toErrorMessage(q));
     } finally {
@@ -1531,17 +1685,60 @@ function CodexSettings() {
               <div className="account-details">
                 <input
                   aria-label="连接名称"
-                  defaultValue={x.displayName}
-                  onBlur={async (e) => {
-                    const name = e.target.value.trim();
-                    if (name && name !== x.displayName) {
+                  disabled={accountSaving === x.id}
+                  value={nameDrafts[x.id] ?? x.displayName}
+                  onChange={(event) => {
+                    dirtyNameIdsRef.current.add(x.id);
+                    setNameDrafts((current) => ({
+                      ...current,
+                      [x.id]: event.target.value,
+                    }));
+                  }}
+                  onBlur={async () => {
+                    const name = (nameDrafts[x.id] ?? x.displayName).trim();
+                    if (!name || name === x.displayName) {
+                      dirtyNameIdsRef.current.delete(x.id);
+                      setNameDrafts((current) => ({
+                        ...current,
+                        [x.id]: x.displayName,
+                      }));
+                      return;
+                    }
+                    try {
+                      setAccountSaving(x.id);
+                      setErr("");
                       await put(`accounts/${x.id}`, decodeOK, {
                         displayName: name,
                         expectedKind: x.expectedKind,
                       });
-                      void load().catch((error) =>
-                        setErr(toErrorMessage(error)),
+                      dirtyNameIdsRef.current.delete(x.id);
+                      setNameDrafts((current) => ({
+                        ...current,
+                        [x.id]: name,
+                      }));
+                      setXs((current) =>
+                        current.map((account) =>
+                          account.id === x.id
+                            ? { ...account, displayName: name }
+                            : account,
+                        ),
                       );
+                      try {
+                        await load();
+                      } catch (error) {
+                        setErr(
+                          `连接名称已保存，但刷新账号列表失败：${toErrorMessage(error)}`,
+                        );
+                      }
+                    } catch (error) {
+                      dirtyNameIdsRef.current.delete(x.id);
+                      setNameDrafts((current) => ({
+                        ...current,
+                        [x.id]: x.displayName,
+                      }));
+                      setErr(toErrorMessage(error));
+                    } finally {
+                      setAccountSaving(0);
                     }
                   }}
                 />
@@ -1566,13 +1763,37 @@ function CodexSettings() {
                 预期连接类型
                 <select
                   aria-label="预期连接类型"
+                  disabled={accountSaving === x.id}
                   value={x.expectedKind}
                   onChange={async (e) => {
-                    await put(`accounts/${x.id}`, decodeOK, {
-                      displayName: x.displayName,
-                      expectedKind: e.target.value,
-                    });
-                    void load().catch((error) => setErr(toErrorMessage(error)));
+                    const expectedKind = e.target
+                      .value as Account["expectedKind"];
+                    try {
+                      setAccountSaving(x.id);
+                      setErr("");
+                      await put(`accounts/${x.id}`, decodeOK, {
+                        displayName: x.displayName,
+                        expectedKind,
+                      });
+                      setXs((current) =>
+                        current.map((account) =>
+                          account.id === x.id
+                            ? { ...account, expectedKind }
+                            : account,
+                        ),
+                      );
+                      try {
+                        await load();
+                      } catch (error) {
+                        setErr(
+                          `连接类型已保存，但刷新账号列表失败：${toErrorMessage(error)}`,
+                        );
+                      }
+                    } catch (error) {
+                      setErr(toErrorMessage(error));
+                    } finally {
+                      setAccountSaving(0);
+                    }
                   }}
                 >
                   <option value="any">不校验</option>
@@ -1583,14 +1804,14 @@ function CodexSettings() {
               <div className="account-buttons">
                 <button
                   className="secondary"
-                  disabled={busy}
+                  disabled={busy || accountSaving === x.id}
                   onClick={() => login(x.id)}
                 >
                   {busy && active === x.id ? "服务启动中…" : "设备码登录"}
                 </button>
                 <button
                   className="secondary"
-                  disabled={busy}
+                  disabled={busy || accountSaving === x.id}
                   onClick={async () => {
                     if (
                       !confirm(`确定要退出“${x.displayName}”的 Codex 账号吗？`)
@@ -1610,7 +1831,7 @@ function CodexSettings() {
                 </button>
                 <button
                   className="icon danger"
-                  disabled={busy}
+                  disabled={busy || accountSaving === x.id}
                   title="删除连接"
                   aria-label={`删除“${x.displayName}”`}
                   onClick={async () => {
@@ -1656,13 +1877,17 @@ function CodexSettings() {
           </section>
         ))}
       </div>
-      {err && <p className="error">{err}</p>}
+      {err && (
+        <p className="error" role="alert">
+          {err}
+        </p>
+      )}
     </div>
   );
 }
 function Telegram() {
   const [v, setV] = useState<TelegramSettingsForm | null>(null),
-    [msg, setMsg] = useState(""),
+    [msg, setMsg] = useState<FeedbackMessage | null>(null),
     [code, setCode] = useState(""),
     [loadError, setLoadError] = useState("");
   const loadTelegram = async (signal?: AbortSignal, eventual = false) => {
@@ -1686,7 +1911,9 @@ function Telegram() {
   if (!v)
     return loadError ? (
       <div className="panel wide">
-        <p className="error">{loadError}</p>
+        <p className="error" role="alert">
+          {loadError}
+        </p>
         <button onClick={() => void loadTelegram()}>重试</button>
       </div>
     ) : (
@@ -1703,9 +1930,12 @@ function Telegram() {
             body: JSON.stringify(v),
           });
           setV({ ...x, token: "" });
-          setMsg(x.warning || "Bot 已验证并保存");
+          setMsg({
+            kind: x.warning ? "error" : "success",
+            text: x.warning || "Bot 已验证并保存",
+          });
         } catch (x) {
-          setMsg(toErrorMessage(x));
+          setMsg({ kind: "error", text: toErrorMessage(x) });
         }
       }}
     >
@@ -1732,7 +1962,7 @@ function Telegram() {
               const x = await post("settings/telegram/bind", decodeCode);
               setCode(x.code);
             } catch (error) {
-              setMsg(toErrorMessage(error));
+              setMsg({ kind: "error", text: toErrorMessage(error) });
             }
           }}
         >
@@ -1744,9 +1974,9 @@ function Telegram() {
           onClick={async () => {
             try {
               await post("settings/telegram/test", decodeOK);
-              setMsg("测试消息已发送");
+              setMsg({ kind: "success", text: "测试消息已发送" });
             } catch (x) {
-              setMsg(toErrorMessage(x));
+              setMsg({ kind: "error", text: toErrorMessage(x) });
             }
           }}
         >
@@ -1773,9 +2003,12 @@ function Telegram() {
                 token: "",
               });
               setCode("");
-              setMsg(x.warning || "Telegram Bot 配置已删除");
+              setMsg({
+                kind: x.warning ? "error" : "success",
+                text: x.warning || "Telegram Bot 配置已删除",
+              });
             } catch (error) {
-              setMsg(toErrorMessage(error));
+              setMsg({ kind: "error", text: toErrorMessage(error) });
             }
           }}
         >
@@ -1789,13 +2022,20 @@ function Telegram() {
           <strong>/bind {code}</strong>
         </div>
       )}
-      {msg && <p className="hint">{msg}</p>}
+      {msg && (
+        <p
+          className={msg.kind === "error" ? "error" : "hint"}
+          role={msg.kind === "error" ? "alert" : "status"}
+        >
+          {msg.text}
+        </p>
+      )}
     </form>
   );
 }
 function SMTP() {
   const [v, setV] = useState<SMTPSettingsForm | null>(null),
-    [msg, setMsg] = useState(""),
+    [msg, setMsg] = useState<FeedbackMessage | null>(null),
     [loadError, setLoadError] = useState("");
   const loadSMTP = async (signal?: AbortSignal, eventual = false) => {
     try {
@@ -1818,7 +2058,9 @@ function SMTP() {
   if (!v)
     return loadError ? (
       <div className="panel wide">
-        <p className="error">{loadError}</p>
+        <p className="error" role="alert">
+          {loadError}
+        </p>
         <button onClick={() => void loadSMTP()}>重试</button>
       </div>
     ) : (
@@ -1832,9 +2074,9 @@ function SMTP() {
         body: JSON.stringify(v),
       });
       setV({ ...saved, password: "" });
-      setMsg("SMTP 设置已保存");
+      setMsg({ kind: "success", text: "SMTP 设置已保存" });
     } catch (x) {
-      setMsg(toErrorMessage(x));
+      setMsg({ kind: "error", text: toErrorMessage(x) });
     }
   };
   return (
@@ -1932,16 +2174,23 @@ function SMTP() {
           onClick={async () => {
             try {
               await post("settings/smtp/test", decodeOK);
-              setMsg("测试邮件已发送");
+              setMsg({ kind: "success", text: "测试邮件已发送" });
             } catch (x) {
-              setMsg(toErrorMessage(x));
+              setMsg({ kind: "error", text: toErrorMessage(x) });
             }
           }}
         >
           发送测试邮件
         </button>
       </div>
-      {msg && <p className="hint">{msg}</p>}
+      {msg && (
+        <p
+          className={msg.kind === "error" ? "error" : "hint"}
+          role={msg.kind === "error" ? "alert" : "status"}
+        >
+          {msg.text}
+        </p>
+      )}
     </form>
   );
 }

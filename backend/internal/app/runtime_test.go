@@ -325,8 +325,7 @@ func (f *fakeCodexClient) Call(_ context.Context, method string, _ any, out any)
 		return f.callError
 	}
 	if method == "account/login/start" {
-		result := out.(*map[string]any)
-		*result = map[string]any{"verificationUrl": "https://example.test/device", "userCode": "ABCD-EFGH"}
+		return json.Unmarshal([]byte(`{"type":"chatgptDeviceCode","loginId":"login-1","verificationUrl":"https://example.test/device","userCode":"ABCD-EFGH"}`), out)
 	}
 	return nil
 }
@@ -538,6 +537,33 @@ func TestDeviceLoginStartsColdRuntime(t *testing.T) {
 	starts, initializes, _, calls := client.counts()
 	if starts != 1 || initializes != 1 || calls != 1 {
 		t.Fatalf("starts = %d, initializes = %d, calls = %d; want 1 each", starts, initializes, calls)
+	}
+	if status := a.runtimes[2].deviceLoginResult("login-1"); status != "pending" {
+		t.Fatalf("device login status = %q; want pending", status)
+	}
+}
+
+func TestDeviceLoginCompletionMatchesLoginID(t *testing.T) {
+	rt := &accountRuntime{client: &fakeCodexClient{connected: true}}
+	rt.startDeviceLogin("current-login")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	a := &App{ctx: ctx, runtimes: map[int64]*accountRuntime{2: rt}}
+
+	a.onCodexNotification(2)("account/login/completed", json.RawMessage(`{"loginId":"older-login","success":false,"error":"cancelled"}`))
+	if status := rt.deviceLoginResult("current-login"); status != "pending" {
+		t.Fatalf("status after stale completion = %q; want pending", status)
+	}
+
+	a.onCodexNotification(2)("account/login/completed", json.RawMessage(`{"loginId":"current-login","success":false,"error":"cancelled"}`))
+	if status := rt.deviceLoginResult("current-login"); status != "failed" {
+		t.Fatalf("status after matching completion = %q; want failed", status)
+	}
+
+	rt.startDeviceLogin("successful-login")
+	a.onCodexNotification(2)("account/login/completed", json.RawMessage(`{"loginId":"successful-login","success":true,"error":null}`))
+	if status := rt.deviceLoginResult("successful-login"); status != "completed" {
+		t.Fatalf("status after successful completion = %q; want completed", status)
 	}
 }
 
