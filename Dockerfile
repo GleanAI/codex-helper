@@ -27,7 +27,7 @@ RUN RESOLVED_CODEX_VERSION="$(node -p "require('/tmp/codex-package.json').versio
  && npm cache clean --force
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap ca-certificates tzdata && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home helper && mkdir -p /data && chown helper:helper /data
 COPY --from=backend /out/codex-helper /usr/local/bin/codex-helper
 COPY --from=codex /usr/local/bin/node /usr/local/bin/node
