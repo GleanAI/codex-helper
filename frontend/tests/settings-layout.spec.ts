@@ -400,7 +400,7 @@ test("overview merges personal and Team connections for the same email", async (
     if (key === "accounts") return route.fulfill({ json: accounts });
     if (key === "dashboard") {
       const accountId = Number(requestUrl.searchParams.get("accountId"));
-      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 2 : 0;
+      const limitCount = accountId === 1 ? 2 : accountId === 2 ? 3 : 0;
       return route.fulfill({
         json: {
           accountId,
@@ -412,11 +412,20 @@ test("overview merges personal and Team connections for the same email", async (
           },
           limits: Array.from({ length: limitCount }, (_, index) => ({
             limitId: `limit-${index}`,
-            limitName: accountId === 2 ? null : index ? "Review" : "Codex",
+            limitName:
+              accountId === 2
+                ? ["gpt-reserve", null, null][index]
+                : index
+                  ? "Review"
+                  : "Codex",
             windowType: index ? "secondary" : "primary",
             usedPercent: accountId === 1 ? 25 + index * 35 : 40,
             windowDurationMinutes:
-              accountId === 2 ? [300, 10_080][index] : index ? 43_200 : 10_080,
+              accountId === 2
+                ? [10_080, 10_080, 300][index]
+                : index
+                  ? 43_200
+                  : 10_080,
             resetsAt: Math.floor(Date.now() / 1000) + 604_800,
           })),
           monthlyCreditLimit:
@@ -448,7 +457,7 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(
     merged.getByText("Team / Business 工作区", { exact: true }),
   ).toBeVisible();
-  await expect(merged.locator(".usage-limit")).toHaveCount(5);
+  await expect(merged.locator(".usage-limit")).toHaveCount(6);
   await expect(
     merged.locator('.usage-limit-gauge[aria-label*="剩余 75%"]'),
   ).toBeVisible();
@@ -466,6 +475,7 @@ test("overview merges personal and Team connections for the same email", async (
   await expect(teamConnection.locator(".usage-limit-details h4")).toHaveText([
     "5 小时窗口",
     "7 天窗口",
+    "gpt-reserve · 7 天窗口",
     "月度额度",
   ]);
   await expect(merged.getByText("下次重置").first()).toBeVisible();
@@ -516,9 +526,10 @@ test("overview merges personal and Team connections for the same email", async (
     testInfo.project.name === "desktop" ? 52 : 60,
   );
   expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
-  expect(geometry.teamLimits).toHaveLength(3);
+  expect(geometry.teamLimits).toHaveLength(4);
   expect(geometry.teamLimits[0].top).toBeLessThan(geometry.teamLimits[1].top);
   expect(geometry.teamLimits[1].top).toBeLessThan(geometry.teamLimits[2].top);
+  expect(geometry.teamLimits[2].top).toBeLessThan(geometry.teamLimits[3].top);
   expect(new Set(geometry.teamLimits.map(({ left }) => left)).size).toBe(1);
   expect(new Set(geometry.teamLimits.map(({ width }) => width)).size).toBe(1);
   expect(geometry.teamLimits.every(({ overflows }) => !overflows)).toBe(true);
@@ -1418,11 +1429,19 @@ test("shows regular and monthly limits in one balance panel", async ({
           },
           limits: [
             {
-              limitId: "codex",
-              limitName: "Codex",
-              windowType: "primary",
-              usedPercent: 25,
-              windowDurationMinutes: 300,
+              limitId: "other",
+              limitName: null,
+              windowType: "secondary",
+              usedPercent: 10,
+              windowDurationMinutes: 0,
+              resetsAt: 0,
+            },
+            {
+              limitId: "gpt-reserve",
+              limitName: "gpt-reserve",
+              windowType: "secondary",
+              usedPercent: 15,
+              windowDurationMinutes: 10_080,
               resetsAt: 0,
             },
             {
@@ -1434,11 +1453,11 @@ test("shows regular and monthly limits in one balance panel", async ({
               resetsAt: 0,
             },
             {
-              limitId: "other",
-              limitName: null,
-              windowType: "secondary",
-              usedPercent: 10,
-              windowDurationMinutes: 0,
+              limitId: "codex",
+              limitName: "Codex",
+              windowType: "primary",
+              usedPercent: 25,
+              windowDurationMinutes: 300,
               resetsAt: 0,
             },
           ],
@@ -1466,9 +1485,10 @@ test("shows regular and monthly limits in one balance panel", async ({
   await expect(balance.locator(".balance-updated")).not.toContainText(
     "尚未同步",
   );
-  await expect(balance.locator(".limit-window")).toHaveCount(4);
+  await expect(balance.locator(".limit-window")).toHaveCount(5);
   await expect(balance.getByText("Codex · 5 小时窗口")).toBeVisible();
   await expect(balance.getByText("Codex · 7 天窗口")).toBeVisible();
+  await expect(balance.getByText("gpt-reserve · 7 天窗口")).toBeVisible();
   await expect(balance.getByText("限额窗口", { exact: true })).toBeVisible();
   await expect(balance.getByText("月度额度", { exact: true })).toBeVisible();
   await expect(
@@ -1485,9 +1505,13 @@ test("shows regular and monthly limits in one balance panel", async ({
   );
   await expect(bars.nth(2)).toHaveAttribute(
     "aria-label",
-    "限额窗口：已使用 10%，剩余 90%",
+    "gpt-reserve · 7 天窗口：已使用 15%，剩余 85%",
   );
   await expect(bars.nth(3)).toHaveAttribute(
+    "aria-label",
+    "限额窗口：已使用 10%，剩余 90%",
+  );
+  await expect(bars.nth(4)).toHaveAttribute(
     "aria-label",
     "月度额度：已使用 32%，剩余 68%",
   );

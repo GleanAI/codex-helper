@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { api, del, get, getEventually, post, put, toErrorMessage } from "./api";
 import { AuthProvider, useAuth } from "./auth";
+import { sortLimitsForDisplay } from "./limit-order";
 import { ThemeProvider, useTheme } from "./theme";
 import {
   decodeAccounts,
@@ -704,12 +705,11 @@ function OverviewConnection({
     label: string;
     usedPercent: number;
     resetsAt: number;
-  }> =
-    dashboard?.limits.map((limit) => ({
-      label: limitWindowLabel(limit),
-      usedPercent: limit.usedPercent,
-      resetsAt: limit.resetsAt,
-    })) ?? [];
+  }> = sortLimitsForDisplay(dashboard?.limits ?? []).map((limit) => ({
+    label: limitWindowLabel(limit),
+    usedPercent: limit.usedPercent,
+    resetsAt: limit.resetsAt,
+  }));
   if (dashboard?.monthlyCreditLimit)
     limits.push({
       label: "月度额度",
@@ -1043,7 +1043,7 @@ function BalancePanel({
       </div>
       {limits.length || monthlyCreditLimit ? (
         <div className="balance-windows">
-          {limits.map((x) => (
+          {sortLimitsForDisplay(limits).map((x) => (
             <LimitWindow
               key={`${x.limitId}:${x.windowType}`}
               label={limitWindowLabel(x)}

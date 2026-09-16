@@ -133,6 +133,58 @@ test("匿名访问公开页并展示全部脱敏用量卡片", async ({ page }) 
   expect(overflow.documentWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 });
 
+test("公开页按固定优先级展示额度窗口", async ({ page }) => {
+  const connection = publicOverview.cards[0].connections[0];
+  const overview = {
+    cards: [
+      {
+        ...publicOverview.cards[0],
+        connections: [
+          {
+            ...connection,
+            limits: [
+              {
+                limitName: null,
+                windowDurationMinutes: 0,
+                usedPercent: 10,
+                resetsAt: 1_887_090_400,
+              },
+              {
+                limitName: "gpt-reserve",
+                windowDurationMinutes: 10_080,
+                usedPercent: 15,
+                resetsAt: 1_887_090_400,
+              },
+              {
+                limitName: null,
+                windowDurationMinutes: 10_080,
+                usedPercent: 60,
+                resetsAt: 1_887_090_400,
+              },
+              {
+                limitName: "Codex",
+                windowDurationMinutes: 300,
+                usedPercent: 25,
+                resetsAt: 1_887_090_400,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  await mockPublicPage(page, false, overview);
+  await page.goto("/");
+
+  await expect(page.locator(".usage-limit-details h4")).toHaveText([
+    "Codex · 5 小时窗口",
+    "7 天窗口",
+    "gpt-reserve · 7 天窗口",
+    "限额窗口",
+    "月度额度",
+  ]);
+});
+
 test("公开页读取失败后允许手动重试", async ({ page }) => {
   let requests = 0;
   await page.route("**/api/v1/**", (route) => {

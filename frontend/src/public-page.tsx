@@ -2,6 +2,7 @@ import { Github, LogIn, ShieldCheck, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getEventually, toErrorMessage } from "./api";
+import { sortLimitsForDisplay } from "./limit-order";
 import { decodePublicOverview, type PublicOverview } from "./types";
 import {
   kindLabel,
@@ -182,7 +183,7 @@ function PublicConnection({
 }: {
   connection: PublicOverview["cards"][number]["connections"][number];
 }) {
-  const limits = connection.limits.map((limit) => ({
+  const limits = sortLimitsForDisplay(connection.limits).map((limit) => ({
     label: limitLabel(limit.limitName, limit.windowDurationMinutes),
     usedPercent: limit.usedPercent,
     resetsAt: limit.resetsAt,
