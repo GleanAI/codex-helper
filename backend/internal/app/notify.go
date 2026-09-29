@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -433,13 +434,7 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 	a.mu.RUnlock()
 	switch text {
 	case "重置时间", "/reset":
-		msg = "⏰ <b>Codex 重置时间</b>\n"
-		for _, d := range ds {
-			msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
-			for _, x := range d.Limits {
-				msg += fmt.Sprintf("• %s\n  <b>%s</b>\n  %s\n", limitLabel(x.WindowDurationMinutes), formatTime(x.ResetsAt, a.general().Timezone), relativeTime(x.ResetsAt, time.Now()))
-			}
-		}
+		msg = renderTelegramResetTimes(ds, a.general().Timezone, time.Now())
 	case "账户信息", "/account":
 		msg = "👤 <b>Codex 账户信息</b>\n"
 		for _, d := range ds {
@@ -461,15 +456,33 @@ func (a *App) handleTG(t TelegramSettings, chat int64, text string) {
 			msg += fmt.Sprintf("\n<b>%s</b>\n累计 Tokens：%s\n历史天数：%d 天\n", html.EscapeString(d.DisplayName), num(d.Summary.LifetimeTokens), len(d.Usage))
 		}
 	default:
-		msg = "📊 <b>Codex 当前用量</b>\n"
-		for _, d := range ds {
-			msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
-			for _, x := range d.Limits {
-				msg += fmt.Sprintf("• %s：<b>剩余 %.1f%%</b>\n  重置：%s（%s）\n", limitLabel(x.WindowDurationMinutes), 100-x.UsedPercent, formatTime(x.ResetsAt, a.general().Timezone), relativeTime(x.ResetsAt, time.Now()))
-			}
-		}
+		msg = renderTelegramCurrentUsage(ds, a.general().Timezone, time.Now())
 	}
 	_ = tgSend(t, msg)
+}
+
+func renderTelegramResetTimes(ds []Dashboard, zone string, now time.Time) string {
+	msg := "⏰ <b>Codex 重置时间</b>\n"
+	for _, d := range ds {
+		msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
+		for _, x := range sortLimitsForDisplay(d.Limits) {
+			label := html.EscapeString(limitWindowLabel(x.LimitName, x.WindowDurationMinutes))
+			msg += fmt.Sprintf("• %s\n  <b>%s</b>\n  %s\n", label, formatTime(x.ResetsAt, zone), relativeTime(x.ResetsAt, now))
+		}
+	}
+	return msg
+}
+
+func renderTelegramCurrentUsage(ds []Dashboard, zone string, now time.Time) string {
+	msg := "📊 <b>Codex 当前用量</b>\n"
+	for _, d := range ds {
+		msg += "\n<b>" + html.EscapeString(d.DisplayName) + "</b>\n"
+		for _, x := range sortLimitsForDisplay(d.Limits) {
+			label := html.EscapeString(limitWindowLabel(x.LimitName, x.WindowDurationMinutes))
+			msg += fmt.Sprintf("• %s：<b>剩余 %.1f%%</b>\n  重置：%s（%s）\n", label, 100-x.UsedPercent, formatTime(x.ResetsAt, zone), relativeTime(x.ResetsAt, now))
+		}
+	}
+	return msg
 }
 func num(n *int64) string {
 	if n == nil {
@@ -586,6 +599,43 @@ func limitLabel(minutes int) string {
 	default:
 		return fmt.Sprintf("%d 分钟额度", minutes)
 	}
+}
+
+func limitWindowLabel(name *string, minutes int) string {
+	window := "限额窗口"
+	switch {
+	case minutes > 0 && minutes%1440 == 0:
+		window = fmt.Sprintf("%d 天窗口", minutes/1440)
+	case minutes > 0 && minutes%60 == 0:
+		window = fmt.Sprintf("%d 小时窗口", minutes/60)
+	case minutes > 0:
+		window = fmt.Sprintf("%d 分钟窗口", minutes)
+	}
+	if name == nil || *name == "" {
+		return window
+	}
+	return *name + " · " + window
+}
+
+func sortLimitsForDisplay(limits []LimitBucket) []LimitBucket {
+	sorted := append([]LimitBucket(nil), limits...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return limitDisplayOrder(sorted[i]) < limitDisplayOrder(sorted[j])
+	})
+	return sorted
+}
+
+func limitDisplayOrder(limit LimitBucket) int {
+	if limit.WindowDurationMinutes == 300 {
+		return 0
+	}
+	if limit.WindowDurationMinutes != 10080 {
+		return 3
+	}
+	if limit.LimitName != nil && strings.EqualFold(strings.TrimSpace(*limit.LimitName), "gpt-reserve") {
+		return 2
+	}
+	return 1
 }
 
 func location(name string) *time.Location {

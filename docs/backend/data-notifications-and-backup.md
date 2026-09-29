@@ -29,6 +29,6 @@
 
 ## Telegram 与 SMTP
 
-Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。Telegram transport 错误在进入 API、通知记录或日志前会去除含 Token 的 URL；启动迁移也会清理旧通知错误中的 Telegram URL。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
+Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。Telegram transport 错误在进入 API、通知记录或日志前会去除含 Token 的 URL；启动迁移也会清理旧通知错误中的 Telegram URL。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。“当前用量”“立即刷新”和“重置时间”按与网页端相同的额度名称和稳定顺序显示窗口，以区分普通 7 天窗口与 `gpt-reserve` 7 天窗口。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
 
 SMTP 支持 `starttls`、隐式 `tls` 和 `none`，TLS 最低 1.2；支持可选 PLAIN AUTH，发送 multipart text/html。TCP 连接和后续 SMTP/TLS 读写共享 35 秒 deadline。修改外部调用时必须保留这一超时边界、TLS server name、HTML 转义和不记录秘密的错误处理。

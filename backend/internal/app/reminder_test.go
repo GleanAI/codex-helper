@@ -468,6 +468,51 @@ func TestNotificationFormatting(t *testing.T) {
 	}
 }
 
+func TestTelegramUsageMatchesWebLimitLabelsAndOrder(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	codex := "Codex"
+	reserve := " gpt-reserve "
+	other := "Review <preview>"
+	limits := []LimitBucket{
+		{LimitName: &reserve, WindowDurationMinutes: 10080, UsedPercent: 0, ResetsAt: now.Add(7 * 24 * time.Hour).Unix()},
+		{LimitName: &other, WindowDurationMinutes: 0, UsedPercent: 50, ResetsAt: now.Add(30 * time.Minute).Unix()},
+		{LimitName: &codex, WindowDurationMinutes: 10080, UsedPercent: 9, ResetsAt: now.Add(4*24*time.Hour + 9*time.Hour).Unix()},
+		{LimitName: &codex, WindowDurationMinutes: 300, UsedPercent: 2, ResetsAt: now.Add(time.Hour + 49*time.Minute).Unix()},
+	}
+	dashboards := []Dashboard{{DisplayName: "GPT <plus>", Limits: limits}}
+
+	for name, message := range map[string]string{
+		"current usage": renderTelegramCurrentUsage(dashboards, "Asia/Shanghai", now),
+		"reset times":   renderTelegramResetTimes(dashboards, "Asia/Shanghai", now),
+	} {
+		labels := []string{
+			"Codex · 5 小时窗口",
+			"Codex · 7 天窗口",
+			" gpt-reserve  · 7 天窗口",
+			"Review &lt;preview&gt; · 限额窗口",
+		}
+		previous := -1
+		for _, label := range labels {
+			index := strings.Index(message, label)
+			if index <= previous {
+				t.Fatalf("%s label %q was missing or out of order: %q", name, label, message)
+			}
+			previous = index
+		}
+		if !strings.Contains(message, "GPT &lt;plus&gt;") {
+			t.Fatalf("%s did not escape the account name: %q", name, message)
+		}
+	}
+
+	usage := renderTelegramCurrentUsage(dashboards, "Asia/Shanghai", now)
+	if !strings.Contains(usage, "剩余 98.0%") || !strings.Contains(usage, "还有 1 小时 49 分") {
+		t.Fatalf("current usage lost percentage or relative reset time: %q", usage)
+	}
+	if limits[0].LimitName != &reserve {
+		t.Fatalf("input limits were reordered: %#v", limits)
+	}
+}
+
 func TestConfirmedResetNotificationUsesRemainingAndNextReset(t *testing.T) {
 	now := time.Date(2026, 8, 20, 3, 51, 0, 0, time.UTC)
 	nextReset := now.Add(7 * 24 * time.Hour)
