@@ -104,7 +104,7 @@
 
 `syncMinutes` 同时控制限额、累计 Token、单日峰值、最长任务时长和每日 Token 桶的后台读取频率，默认值为 5。手动账号同步不受该间隔限制。该设置不保证上游账号级摘要或日桶在每次读取时都会变化。
 
-`autoHello` 默认为 `false`。启用后，每个账号的 5 小时窗口在未使用且下一次重置时间约为 5 小时时，会通过该账号的 Codex app-server 发送一次 `Hello`；同一 `resetsAt` 只发送一次，失败任务在六小时内重试。
+`autoHello` 默认为 `false`。启用后，每个账号的 5 小时窗口在未使用且下一次重置时间约为 5 小时时，会通过该账号的 Codex app-server 发送一次 `Hello`；即使可选窗口元数据短暂缺失、未使用窗口的 `resetsAt` 随抓取时间滑动或历史记录被清理，每个连续未使用阶段也只发送一次，只有明确观测到非零用量后才允许开启下一阶段。任务只有在 app-server 返回 `turn/completed` 且最终状态为 `completed` 后才视为成功；已确认失败的任务从首次计划时间起按 0、5、15、30、60、120、240 分钟退避，六小时窗口内最多尝试七次。超时后无法确认终态的 turn 会先请求中断且不会盲目重发。自动任务使用 ephemeral thread，结束后取消订阅；取消订阅失败时回收对应 app-server 进程。
 
 ### SMTP
 
@@ -130,4 +130,4 @@
 
 ## 7. 外部协议边界
 
-每个账号通过 JSONL stdio 与 `codex app-server` 通信。当前使用的方法为 `initialize`、`account/read`、`account/login/start`、`account/logout`、`account/rateLimits/read`、`account/usage/read`、`model/list`、`thread/start` 和 `turn/start`，并响应 `account/login/completed`、`account/updated`、`account/rateLimits/updated` 通知。自动 Hello 使用独立只读 turn，并优先选择低成本模型和最低可用 effort。官方协议说明见 [Codex App Server](https://learn.chatgpt.com/docs/app-server)；本项目以 Dockerfile 固定的 Codex CLI 版本、当前解析代码和测试作为兼容基线。
+每个账号通过 JSONL stdio 与 `codex app-server` 通信。当前使用的方法为 `initialize`、`account/read`、`account/login/start`、`account/logout`、`account/rateLimits/read`、`account/usage/read`、`model/list`、`thread/start`、`thread/unsubscribe`、`turn/start` 和 `turn/interrupt`，并响应 `account/login/completed`、`account/updated`、`account/rateLimits/updated` 与 `turn/completed` 通知。自动 Hello 使用独立只读 ephemeral turn，并优先选择低成本模型和最低可用 effort。官方协议说明见 [Codex App Server](https://learn.chatgpt.com/docs/app-server)；本项目以 Dockerfile 固定的 Codex CLI 版本、当前解析代码和测试作为兼容基线。

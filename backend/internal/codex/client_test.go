@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -27,8 +28,17 @@ type blockedWriteCloser struct {
 }
 
 type scriptedWriteCloser struct {
-	client   *Client
-	requests []map[string]any
+	client                      *Client
+	requests                    []map[string]any
+	completionStatus            string
+	completionError             string
+	turnStartError              string
+	turnStarted                 chan struct{}
+	turnRelease                 chan struct{}
+	interruptError              string
+	suppressInterruptCompletion bool
+	unsubscribeError            string
+	unsubscribeStatus           string
 }
 
 func (w *scriptedWriteCloser) Write(p []byte) (int, error) {
@@ -51,7 +61,15 @@ func (w *scriptedWriteCloser) Write(p []byte) (int, error) {
 	case "thread/start":
 		result = `{"thread":{"id":"thread-1"}}`
 	case "turn/start":
+		result = `{"turn":{"id":"turn-1","status":"inProgress","items":[]}}`
+	case "turn/interrupt":
 		result = `{}`
+	case "thread/unsubscribe":
+		status := w.unsubscribeStatus
+		if status == "" {
+			status = "unsubscribed"
+		}
+		result = fmt.Sprintf(`{"status":%q}`, status)
 	default:
 		return 0, errors.New("unexpected method: " + request.Method)
 	}
@@ -59,7 +77,40 @@ func (w *scriptedWriteCloser) Write(p []byte) (int, error) {
 	response := w.client.pending[request.ID]
 	delete(w.client.pending, request.ID)
 	w.client.mu.Unlock()
-	response <- envelope{Result: json.RawMessage(result)}
+	if request.Method == "turn/start" && w.turnStartError != "" {
+		response <- envelope{Error: w.turnStartError}
+	} else if request.Method == "thread/unsubscribe" && w.unsubscribeError != "" {
+		response <- envelope{Error: w.unsubscribeError}
+	} else if request.Method == "turn/interrupt" && w.interruptError != "" {
+		response <- envelope{Error: w.interruptError}
+	} else {
+		response <- envelope{Result: json.RawMessage(result)}
+	}
+	if request.Method == "turn/interrupt" && w.interruptError == "" && !w.suppressInterruptCompletion {
+		w.client.completeTurn(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted","items":[]}}`))
+	}
+	if request.Method == "turn/start" && w.turnStartError == "" {
+		status := w.completionStatus
+		if status == "" {
+			status = "completed"
+		}
+		params := fmt.Sprintf(`{"threadId":"thread-1","turn":{"id":"turn-1","status":%q,"items":[]}}`, status)
+		if w.completionError != "" {
+			params = fmt.Sprintf(`{"threadId":"thread-1","turn":{"id":"turn-1","status":%q,"items":[],"error":{"message":%q}}}`, status, w.completionError)
+		}
+		if w.turnStarted != nil {
+			close(w.turnStarted)
+		}
+		complete := func() { w.client.completeTurn(json.RawMessage(params)) }
+		if w.turnRelease != nil {
+			go func() {
+				<-w.turnRelease
+				complete()
+			}()
+		} else {
+			complete()
+		}
+	}
 	return len(p), nil
 }
 
@@ -140,22 +191,240 @@ func TestSendMessageUsesReadOnlySandbox(t *testing.T) {
 	if err := c.SendMessage(context.Background(), "Hello"); err != nil {
 		t.Fatal(err)
 	}
-	if len(writer.requests) != 3 {
-		t.Fatalf("request count = %d; want 3", len(writer.requests))
+	if len(writer.requests) != 4 {
+		t.Fatalf("request count = %d; want 4", len(writer.requests))
 	}
 	threadParams := writer.requests[1]["params"].(map[string]any)
 	if threadParams["sandbox"] != "read-only" {
 		t.Fatalf("thread sandbox = %#v; want read-only", threadParams["sandbox"])
 	}
+	if threadParams["ephemeral"] != true {
+		t.Fatalf("thread ephemeral = %#v; want true", threadParams["ephemeral"])
+	}
+	if threadParams["serviceName"] != "codex-helper-auto-hello" {
+		t.Fatalf("thread serviceName = %#v", threadParams["serviceName"])
+	}
 	turnParams := writer.requests[2]["params"].(map[string]any)
 	sandboxPolicy := turnParams["sandboxPolicy"].(map[string]any)
-	if sandboxPolicy["type"] != "read-only" {
-		t.Fatalf("turn sandbox = %#v; want read-only", sandboxPolicy["type"])
+	if sandboxPolicy["type"] != "readOnly" {
+		t.Fatalf("turn sandbox = %#v; want readOnly", sandboxPolicy["type"])
 	}
 	input := turnParams["input"].([]any)
 	if input[0].(map[string]any)["text"] != "Hello" {
 		t.Fatalf("input = %#v; want Hello", input)
 	}
+	if writer.requests[3]["method"] != "thread/unsubscribe" {
+		t.Fatalf("final request = %#v; want thread/unsubscribe", writer.requests[3])
+	}
+	unsubscribeParams := writer.requests[3]["params"].(map[string]any)
+	if unsubscribeParams["threadId"] != "thread-1" {
+		t.Fatalf("thread/unsubscribe params = %#v", unsubscribeParams)
+	}
+}
+
+func TestSendMessageRecyclesProcessWhenThreadCleanupFails(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	writer := &scriptedWriteCloser{client: c, unsubscribeError: "cleanup rejected"}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	if err := c.SendMessage(context.Background(), "Hello"); err != nil {
+		t.Fatalf("SendMessage error = %v; delivery was completed", err)
+	}
+	if c.Connected() {
+		t.Fatal("client remained connected after thread cleanup failure")
+	}
+}
+
+func TestSendMessageUnsubscribesAfterTurnStartFailure(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	writer := &scriptedWriteCloser{client: c, turnStartError: "invalid turn"}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	err := c.SendMessage(context.Background(), "Hello")
+	if err == nil || !strings.Contains(err.Error(), "invalid turn") {
+		t.Fatalf("SendMessage error = %v", err)
+	}
+	if len(writer.requests) != 4 || writer.requests[3]["method"] != "thread/unsubscribe" {
+		t.Fatalf("requests = %#v; want cleanup after turn/start failure", writer.requests)
+	}
+	if !c.Connected() {
+		t.Fatal("client was recycled after successful thread cleanup")
+	}
+}
+
+func TestRPCErrorIsDistinguishedFromUnknownOutcome(t *testing.T) {
+	err := &rpcError{method: "turn/start", detail: "invalid turn"}
+	if !isRPCError(err) || IsTurnOutcomeUnknown(err) {
+		t.Fatalf("rpc error classification failed: %v", err)
+	}
+	unknown := &TurnOutcomeUnknownError{Cause: context.DeadlineExceeded}
+	if isRPCError(unknown) || !IsTurnOutcomeUnknown(unknown) {
+		t.Fatalf("unknown outcome classification failed: %v", unknown)
+	}
+}
+
+func TestSendMessageWaitsForTurnCompletion(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &scriptedWriteCloser{client: c, turnStarted: started, turnRelease: release}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	done := make(chan error, 1)
+	go func() { done <- c.SendMessage(context.Background(), "Hello") }()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("SendMessage returned before turn/completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSendMessageReturnsCompletedTurnFailure(t *testing.T) {
+	for _, test := range []struct {
+		status  string
+		message string
+	}{
+		{status: "failed", message: "upstream rejected turn"},
+		{status: "interrupted", message: "status interrupted"},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			c := New(t.TempDir(), nil)
+			writer := &scriptedWriteCloser{client: c, completionStatus: test.status}
+			if test.status == "failed" {
+				writer.completionError = test.message
+			}
+			c.connected = true
+			c.cmd = &exec.Cmd{}
+			c.in = writer
+			err := c.SendMessage(context.Background(), "Hello")
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("SendMessage error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSendMessageCancellationCleansTurnWaiter(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &scriptedWriteCloser{client: c, turnStarted: started, turnRelease: release}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.SendMessage(ctx, "Hello") }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendMessage error = %v; want context canceled", err)
+	}
+	c.turnMu.Lock()
+	remaining := len(c.turns)
+	c.turnMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("turn waiters = %d; want 0", remaining)
+	}
+	switch len(writer.requests) {
+	case 4:
+		if writer.requests[3]["method"] != "thread/unsubscribe" {
+			t.Fatalf("requests = %#v; want cleanup after unknown turn/start outcome", writer.requests)
+		}
+	case 5:
+		if writer.requests[3]["method"] != "turn/interrupt" || writer.requests[4]["method"] != "thread/unsubscribe" {
+			t.Fatalf("requests = %#v; want turn/interrupt followed by cleanup", writer.requests)
+		}
+	default:
+		t.Fatalf("requests = %#v; want cancellation before or after turn/start response consumption", writer.requests)
+	}
+	close(release)
+}
+
+func TestInterruptTurnUsesAcceptedTurnID(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	writer := &scriptedWriteCloser{client: c}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	completed := make(chan turnCompletion, 1)
+	c.turns["thread-1"] = completed
+	err := c.interruptTurn("thread-1", "turn-1", completed, context.Canceled)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "status interrupted") {
+		t.Fatalf("interruptTurn error = %v", err)
+	}
+	if len(writer.requests) != 1 || writer.requests[0]["method"] != "turn/interrupt" {
+		t.Fatalf("requests = %#v; want turn/interrupt", writer.requests)
+	}
+	interruptParams := writer.requests[0]["params"].(map[string]any)
+	if interruptParams["threadId"] != "thread-1" || interruptParams["turnId"] != "turn-1" {
+		t.Fatalf("turn/interrupt params = %#v", interruptParams)
+	}
+	c.turnMu.Lock()
+	remaining := len(c.turns)
+	c.turnMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("turn waiters = %d; want 0", remaining)
+	}
+}
+
+func TestSendMessageDoesNotRetryWhenInterruptedTurnOutcomeIsUnknown(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &scriptedWriteCloser{
+		client:         c,
+		turnStarted:    started,
+		turnRelease:    release,
+		interruptError: "interrupt rejected",
+	}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.SendMessage(ctx, "Hello") }()
+	<-started
+	cancel()
+	err := <-done
+	if !IsTurnOutcomeUnknown(err) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendMessage error = %v; want unknown outcome wrapping cancellation", err)
+	}
+	close(release)
+}
+
+func TestCloseInterruptsTurnWaiter(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writer := &scriptedWriteCloser{client: c, turnStarted: started, turnRelease: release}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	done := make(chan error, 1)
+	go func() { done <- c.SendMessage(context.Background(), "Hello") }()
+	<-started
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "disconnected") {
+		t.Fatalf("SendMessage error = %v; want disconnected", err)
+	}
+	c.turnMu.Lock()
+	remaining := len(c.turns)
+	c.turnMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("turn waiters = %d; want 0", remaining)
+	}
+	close(release)
 }
 
 func TestCallCleansPendingAfterWriteFailure(t *testing.T) {

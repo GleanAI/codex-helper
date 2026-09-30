@@ -28,7 +28,7 @@ account/login/start {type:"chatgptDeviceCode"}
 - 用量读取更新 summary，并把合法的每日 Token bucket 按账号合并到 `daily_usage`；同日后续值覆盖旧值。Dashboard 从保留期内最早保存的官方日桶连续生成到配置时区的今天，缺失日期补为零。接口失败且登录邮箱未变化时保留上一份内存 summary，并从 SQLite 恢复历史；退出登录、身份未知或邮箱变化时清除该精确槽位可从官方源恢复的日用量缓存，不沿用旧 summary，且用量失败不令整次同步失败。
 - 每次限额同步写入快照，结合已到期窗口的 `resets_at` 推进或提前发生的用量百分比显著回落确认重置，并更新账号元数据及内存 Dashboard。只有新快照确认后才生成重置后提醒；通知使用新周期的剩余比例和下一次重置时间。
 
-启用 `autoHello` 时，限额同步还会识别未使用的 5 小时窗口并排队一次 `Hello`。发送器使用 `model/list` 优先选择低成本模型和最低可用 effort，再通过 `thread/start` 与 `turn/start` 创建只读独立 turn；模型不可用时回退到 app-server 默认模型。
+启用 `autoHello` 时，限额同步还会识别未使用的 5 小时窗口并按连续未使用阶段排队一次 `Hello`。阶段标记独立持久化到明确观测到非零用量，不会因 optional 元数据短暂缺失、上游未启动窗口的 `resetsAt` 滑动或历史清理而重复排队。发送器使用 `model/list` 优先选择低成本模型和最低可用 effort，再通过 `thread/start` 与 `turn/start` 创建只读 ephemeral turn；模型不可用时回退到 app-server 默认模型，并等待 `turn/completed` 的最终状态确认真实成功。等待超时时会用独立短 context 调用 `turn/interrupt` 并继续等待终态；若仍无法确认原 turn 是否完成，则不自动重发同一阶段。获得 thread ID 后的所有结束路径都会调用 `thread/unsubscribe`；清理失败时关闭该账号的 app-server，让后续 `ensureReady` 创建干净进程，已确认成功的任务不会因此重发。
 
 `account/rateLimits/read` 的 `individualLimit`、`account/usage/read` 的 optional 指标和 daily buckets 都可能暂未提供。能力按响应字段检测，不根据 Codex 版本或套餐猜测。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
 

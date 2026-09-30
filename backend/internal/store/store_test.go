@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -55,6 +56,93 @@ func TestAccountsAndPerAccountUsage(t *testing.T) {
 	}
 }
 
+func TestAutoHelloStateSurvivesCleanupAndCascadesWithAccount(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	account, err := s.CreateAccount("Auto Hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(`INSERT INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+		VALUES(?,?,?,?)`, account.ID, "codex", "primary", time.Now().AddDate(0, 0, -400).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Cleanup(30); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM auto_hello_state WHERE account_id=?", account.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("state after cleanup = %d, %v; want 1", count, err)
+	}
+	if err = s.DeleteAccount(account.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM auto_hello_state WHERE account_id=?", account.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("state after account deletion = %d, %v; want 0", count, err)
+	}
+}
+
+func TestExistingAutoHelloNotificationsSeedOnlyCurrentEpisodeState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		limitID   string
+		scheduled int64
+		lastUse   int64
+	}{
+		{limitID: "current", scheduled: 200, lastUse: 100},
+		{limitID: "finished", scheduled: 100, lastUse: 200},
+	} {
+		key := fmt.Sprintf("1:%s:primary:%d:hello", row.limitID, row.scheduled+18_000)
+		if _, err = s.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+			VALUES(?,'codex','auto_hello','sent',?,'Hello',1)`, key, row.scheduled); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.DB.Exec(`INSERT INTO limit_snapshots
+			(account_id,limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at)
+			VALUES(1,?,'primary',1,300,?,?)`, row.limitID, row.lastUse+18_000, row.lastUse); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.DB.Exec("DROP TABLE auto_hello_state"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	rows, err := s.DB.Query("SELECT limit_id FROM auto_hello_state ORDER BY limit_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var limits []string
+	for rows.Next() {
+		var limitID string
+		if err = rows.Scan(&limitID); err != nil {
+			t.Fatal(err)
+		}
+		limits = append(limits, limitID)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(limits) != 1 || limits[0] != "current" {
+		t.Fatalf("seeded states = %#v; want current only", limits)
+	}
+}
+
 func TestDailyUsageUpsertAndRange(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -99,6 +187,15 @@ func TestDailyUsageUpsertAndRange(t *testing.T) {
 	if err = s.UpdateAccount(second.ID, &email, &plan, true); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.DB.Exec(`INSERT INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+		VALUES(?,?,?,?)`, second.ID, "codex", "primary", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES(?, 'codex', 'auto_hello', 'sent', 1, 'Hello', ?)`, fmt.Sprintf("%d:codex:primary:10:hello", second.ID), second.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.DisconnectAccount(second.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +209,12 @@ func TestDailyUsageUpsertAndRange(t *testing.T) {
 	}
 	if accounts[1].Connected || accounts[1].Email != nil || accounts[1].PlanType != nil {
 		t.Fatalf("disconnected account = %#v", accounts[1])
+	}
+	var autoHelloRows int
+	if err = s.DB.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM auto_hello_state WHERE account_id=?) +
+		(SELECT COUNT(*) FROM notifications WHERE account_id=? AND kind='auto_hello')`, second.ID, second.ID).Scan(&autoHelloRows); err != nil || autoHelloRows != 0 {
+		t.Fatalf("auto hello data after disconnect = %d, %v; want 0", autoHelloRows, err)
 	}
 }
 

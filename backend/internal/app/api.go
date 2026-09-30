@@ -739,6 +739,9 @@ func (a *App) syncAccount(ctx context.Context, id int64) (syncErr error) {
 		if err := a.store.DeleteDailyUsage(id); err != nil {
 			return err
 		}
+		if err := a.store.DeleteAutoHelloData(id); err != nil {
+			return err
+		}
 	}
 	if d.Account.Connected && rt.dash.Account.Connected && d.Account.Email != nil && rt.dash.Account.Email != nil && strings.EqualFold(*d.Account.Email, *rt.dash.Account.Email) {
 		d.Summary = rt.dash.Summary
@@ -882,32 +885,51 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 	for _, x := range d.Limits {
 		var previousID, previousFetchedAt, previousResetsAt int64
 		var previousUsed float64
-		err = tx.QueryRow(`SELECT id,used_percent,resets_at,fetched_at FROM limit_snapshots
+		snapshotErr := tx.QueryRow(`SELECT id,used_percent,resets_at,fetched_at FROM limit_snapshots
 			WHERE account_id=? AND limit_id=? AND window_type=? ORDER BY fetched_at DESC,id DESC LIMIT 1`,
 			d.AccountID, x.LimitID, x.WindowType).Scan(&previousID, &previousUsed, &previousResetsAt, &previousFetchedAt)
-		if err != nil && err != sql.ErrNoRows {
-			return nil, err
+		if snapshotErr != nil && snapshotErr != sql.ErrNoRows {
+			return nil, snapshotErr
 		}
 		age := d.FetchedAt - previousFetchedAt
-		if g.AutoHello && qualifiesForAutoHello(x, d.FetchedAt) {
-			key := fmt.Sprintf("%d:%s:%s:%d:hello", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt)
-			var status string
-			statusErr := tx.QueryRow("SELECT status FROM notifications WHERE dedupe_key=?", key).Scan(&status)
-			switch {
-			case statusErr == sql.ErrNoRows:
-				_, err = tx.Exec(`INSERT INTO notifications
-					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
-					VALUES(?, 'codex', 'auto_hello', 'staged', 0, '', ?, NULL, 'Hello', ?)`, key, d.FetchedAt, d.AccountID)
-			case statusErr != nil:
-				err = statusErr
-			case status == "expired":
-				_, err = tx.Exec(`UPDATE notifications SET status='staged',attempts=0,last_error='',scheduled_at=?,sent_at=NULL,body='Hello',account_id=? WHERE dedupe_key=?`, d.FetchedAt, d.AccountID, key)
-			}
-			if err != nil {
+		if x.UsedPercent > 0 {
+			if _, err = tx.Exec(`DELETE FROM auto_hello_state
+				WHERE account_id=? AND limit_id=? AND window_type=?`, d.AccountID, x.LimitID, x.WindowType); err != nil {
 				return nil, err
 			}
 		}
-		if err == nil && g.NotifyAfter {
+		if g.AutoHello && qualifiesForAutoHello(x, d.FetchedAt) {
+			var marker int
+			markerErr := tx.QueryRow(`SELECT 1 FROM auto_hello_state
+				WHERE account_id=? AND limit_id=? AND window_type=?`, d.AccountID, x.LimitID, x.WindowType).Scan(&marker)
+			if markerErr != nil && markerErr != sql.ErrNoRows {
+				return nil, markerErr
+			}
+			if markerErr == sql.ErrNoRows {
+				episodeStart, boundaryErr := lastAutoHelloUse(tx, d.AccountID, x.LimitID, x.WindowType, d.FetchedAt)
+				if boundaryErr != nil {
+					return nil, boundaryErr
+				}
+				exists, existsErr := autoHelloTaskExists(tx, d.AccountID, x.LimitID, x.WindowType, episodeStart)
+				if existsErr != nil {
+					return nil, existsErr
+				}
+				if _, err = tx.Exec(`INSERT INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+					VALUES(?,?,?,?)`, d.AccountID, x.LimitID, x.WindowType, d.FetchedAt); err != nil {
+					return nil, err
+				}
+				if !exists {
+					key := fmt.Sprintf("%d:%s:%s:%d:hello", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt)
+					_, err = tx.Exec(`INSERT OR IGNORE INTO notifications
+						(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+						VALUES(?, 'codex', 'auto_hello', 'staged', 0, '', ?, NULL, 'Hello', ?)`, key, d.FetchedAt, d.AccountID)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		if snapshotErr == nil && g.NotifyAfter {
 			withinScheduledWindow := previousResetsAt > 0 && previousResetsAt <= d.FetchedAt && d.FetchedAt-previousResetsAt <= int64((6*time.Hour).Seconds())
 			normalReset := withinScheduledWindow && x.ResetsAt > previousResetsAt && x.ResetsAt > d.FetchedAt
 			earlyReset := previousResetsAt > d.FetchedAt && age >= 0 && age <= int64((6*time.Hour).Seconds()) && previousUsed-x.UsedPercent > resetDropTolerance
@@ -938,6 +960,37 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 		return nil, err
 	}
 	return resetNotifications, nil
+}
+
+func lastAutoHelloUse(tx *sql.Tx, accountID int64, limitID, windowType string, before int64) (int64, error) {
+	var boundary int64
+	err := tx.QueryRow(`SELECT fetched_at FROM limit_snapshots
+		WHERE account_id=? AND limit_id=? AND window_type=? AND fetched_at<? AND used_percent>0
+		ORDER BY fetched_at DESC,id DESC LIMIT 1`, accountID, limitID, windowType, before).Scan(&boundary)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return boundary, err
+}
+
+func autoHelloTaskExists(tx *sql.Tx, accountID int64, limitID, windowType string, since int64) (bool, error) {
+	rows, err := tx.Query(`SELECT dedupe_key FROM notifications
+		WHERE account_id=? AND kind='auto_hello' AND scheduled_at>?`, accountID, since)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			return false, err
+		}
+		identity, ok := parseAutoHelloTaskKey(key, accountID)
+		if ok && identity.limitID == limitID && identity.windowType == windowType {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func qualifiesForAutoHello(limit LimitBucket, fetchedAt int64) bool {

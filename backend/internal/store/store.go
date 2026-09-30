@@ -62,7 +62,90 @@ INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 	if err = s.migrateAccounts(); err != nil {
 		return err
 	}
-	return s.migrateNotificationAccounts()
+	if err = s.migrateNotificationAccounts(); err != nil {
+		return err
+	}
+	return s.migrateAutoHelloState()
+}
+
+func (s *Store) migrateAutoHelloState() error {
+	if _, err := s.DB.Exec(`CREATE TABLE IF NOT EXISTS auto_hello_state (
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		limit_id TEXT NOT NULL,
+		window_type TEXT NOT NULL,
+		started_at INTEGER NOT NULL,
+		PRIMARY KEY(account_id,limit_id,window_type)
+	)`); err != nil {
+		return err
+	}
+	type legacyTask struct {
+		accountID  int64
+		limitID    string
+		windowType string
+		scheduled  int64
+	}
+	rows, err := s.DB.Query(`SELECT account_id,dedupe_key,scheduled_at FROM notifications
+		WHERE kind='auto_hello' AND account_id IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	tasks := []legacyTask{}
+	for rows.Next() {
+		var accountID, scheduled int64
+		var key string
+		if err = rows.Scan(&accountID, &key, &scheduled); err != nil {
+			rows.Close()
+			return err
+		}
+		limitID, windowType, ok := autoHelloNotificationIdentity(key, accountID)
+		if ok {
+			tasks = append(tasks, legacyTask{accountID: accountID, limitID: limitID, windowType: windowType, scheduled: scheduled})
+		}
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		var lastUse sql.NullInt64
+		if err = s.DB.QueryRow(`SELECT MAX(fetched_at) FROM limit_snapshots
+			WHERE account_id=? AND limit_id=? AND window_type=? AND used_percent>0`,
+			task.accountID, task.limitID, task.windowType).Scan(&lastUse); err != nil {
+			return err
+		}
+		if lastUse.Valid && lastUse.Int64 >= task.scheduled {
+			continue
+		}
+		if _, err = s.DB.Exec(`INSERT OR IGNORE INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+			VALUES(?,?,?,?)`, task.accountID, task.limitID, task.windowType, task.scheduled); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func autoHelloNotificationIdentity(key string, accountID int64) (string, string, bool) {
+	base, ok := strings.CutSuffix(key, ":hello")
+	if !ok {
+		return "", "", false
+	}
+	resetSeparator := strings.LastIndexByte(base, ':')
+	if resetSeparator < 0 {
+		return "", "", false
+	}
+	if _, err := strconv.ParseInt(base[resetSeparator+1:], 10, 64); err != nil {
+		return "", "", false
+	}
+	base = base[:resetSeparator]
+	accountPrefix := strconv.FormatInt(accountID, 10) + ":"
+	if !strings.HasPrefix(base, accountPrefix) {
+		return "", "", false
+	}
+	limitAndWindow := strings.TrimPrefix(base, accountPrefix)
+	windowSeparator := strings.LastIndexByte(limitAndWindow, ':')
+	if windowSeparator <= 0 || windowSeparator == len(limitAndWindow)-1 {
+		return "", "", false
+	}
+	return limitAndWindow[:windowSeparator], limitAndWindow[windowSeparator+1:], true
 }
 
 func (s *Store) migrateNotificationAccounts() error {
@@ -548,6 +631,21 @@ func (s *Store) DeleteDailyUsage(accountID int64) error {
 	return err
 }
 
+func (s *Store) DeleteAutoHelloData(accountID int64) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM auto_hello_state WHERE account_id=?", accountID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) DisconnectAccount(accountID int64) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -555,6 +653,12 @@ func (s *Store) DisconnectAccount(accountID int64) error {
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec("DELETE FROM daily_usage WHERE account_id=?", accountID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM auto_hello_state WHERE account_id=?", accountID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {
 		return err
 	}
 	result, err := tx.Exec("UPDATE accounts SET email=NULL,plan_type=NULL,connected=0,updated_at=? WHERE id=?", time.Now().Unix(), accountID)

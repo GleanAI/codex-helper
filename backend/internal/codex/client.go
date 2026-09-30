@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,9 +19,11 @@ import (
 type Client struct {
 	mu        sync.Mutex
 	writeMu   sync.Mutex
+	turnMu    sync.Mutex
 	cmd       *exec.Cmd
 	in        io.WriteCloser
 	pending   map[int64]chan envelope
+	turns     map[string]chan turnCompletion
 	id        atomic.Int64
 	connected bool
 	configDir string
@@ -34,8 +37,61 @@ type envelope struct {
 	Error  any             `json:"error,omitempty"`
 }
 
+type appServerTurn struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type turnCompletion struct {
+	turn appServerTurn
+	err  error
+}
+
+// TurnOutcomeUnknownError means a turn was accepted by app-server but its
+// terminal status could not be confirmed. Callers must not automatically
+// repeat the message because the original turn may still complete upstream.
+type TurnOutcomeUnknownError struct {
+	Cause error
+}
+
+type rpcError struct {
+	method string
+	detail any
+}
+
+func (e *rpcError) Error() string {
+	return fmt.Sprintf("app-server %s: %v", e.method, e.detail)
+}
+
+func isRPCError(err error) bool {
+	var target *rpcError
+	return errors.As(err, &target)
+}
+
+func (e *TurnOutcomeUnknownError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "app-server turn outcome is unknown"
+	}
+	return "app-server turn outcome is unknown: " + e.Cause.Error()
+}
+
+func (e *TurnOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func IsTurnOutcomeUnknown(err error) bool {
+	var target *TurnOutcomeUnknownError
+	return errors.As(err, &target)
+}
+
 func New(configDir string, notify func(string, json.RawMessage)) *Client {
-	return &Client{pending: map[int64]chan envelope{}, configDir: configDir, notify: notify}
+	return &Client{pending: map[int64]chan envelope{}, turns: map[string]chan turnCompletion{}, configDir: configDir, notify: notify}
 }
 func (c *Client) Start(ctx context.Context) error {
 	c.mu.Lock()
@@ -105,7 +161,9 @@ func (c *Client) SendMessage(ctx context.Context, message string) error {
 	activeModel := model
 	threadParams := map[string]any{
 		"approvalPolicy": "never",
+		"ephemeral":      true,
 		"sandbox":        "read-only",
+		"serviceName":    "codex-helper-auto-hello",
 	}
 	if model != "" {
 		threadParams["model"] = model
@@ -116,25 +174,44 @@ func (c *Client) SendMessage(ctx context.Context, message string) error {
 		} `json:"thread"`
 	}
 	if err := c.Call(ctx, "thread/start", threadParams, &thread); err != nil {
-		if model != "" {
-			delete(threadParams, "model")
-			if fallbackErr := c.Call(ctx, "thread/start", threadParams, &thread); fallbackErr != nil {
-				return err
+		if model == "" || !isRPCError(err) {
+			if !isRPCError(err) {
+				_ = c.Close()
 			}
-			activeModel = ""
-			effort = ""
-		} else {
 			return err
 		}
+		delete(threadParams, "model")
+		if fallbackErr := c.Call(ctx, "thread/start", threadParams, &thread); fallbackErr != nil {
+			if !isRPCError(fallbackErr) {
+				_ = c.Close()
+			}
+			return fallbackErr
+		}
+		activeModel = ""
+		effort = ""
 	}
 	if thread.Thread.ID == "" {
 		return errors.New("app-server thread/start returned no thread")
 	}
+	defer c.releaseThread(thread.Thread.ID)
+	completed := make(chan turnCompletion, 1)
+	c.turnMu.Lock()
+	if c.turns == nil {
+		c.turns = map[string]chan turnCompletion{}
+	}
+	if _, exists := c.turns[thread.Thread.ID]; exists {
+		c.turnMu.Unlock()
+		return errors.New("app-server thread already has an active turn")
+	}
+	c.turns[thread.Thread.ID] = completed
+	c.turnMu.Unlock()
+	defer c.removeTurnWaiter(thread.Thread.ID, completed)
+
 	turnParams := map[string]any{
 		"threadId":       thread.Thread.ID,
 		"input":          []map[string]string{{"type": "text", "text": message}},
 		"approvalPolicy": "never",
-		"sandboxPolicy":  map[string]any{"type": "read-only"},
+		"sandboxPolicy":  map[string]any{"type": "readOnly"},
 	}
 	if activeModel != "" {
 		turnParams["model"] = activeModel
@@ -142,7 +219,150 @@ func (c *Client) SendMessage(ctx context.Context, message string) error {
 	if effort != "" {
 		turnParams["effort"] = effort
 	}
-	return c.Call(ctx, "turn/start", turnParams, nil)
+	var started struct {
+		Turn appServerTurn `json:"turn"`
+	}
+	if err := c.Call(ctx, "turn/start", turnParams, &started); err != nil {
+		if !isRPCError(err) {
+			return &TurnOutcomeUnknownError{Cause: err}
+		}
+		return err
+	}
+	if started.Turn.ID == "" {
+		return errors.New("app-server turn/start returned no turn")
+	}
+	if started.Turn.Status != "" && started.Turn.Status != "inProgress" {
+		return completedTurnError(started.Turn)
+	}
+	select {
+	case result := <-completed:
+		if result.err != nil {
+			return &TurnOutcomeUnknownError{Cause: result.err}
+		}
+		if result.turn.ID != "" && result.turn.ID != started.Turn.ID {
+			return &TurnOutcomeUnknownError{Cause: errors.New("app-server completed an unexpected turn")}
+		}
+		return completedTurnError(result.turn)
+	case <-ctx.Done():
+		return c.interruptTurn(thread.Thread.ID, started.Turn.ID, completed, ctx.Err())
+	}
+}
+
+const (
+	turnInterruptTimeout = 5 * time.Second
+	threadCleanupTimeout = 5 * time.Second
+)
+
+func (c *Client) releaseThread(threadID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), threadCleanupTimeout)
+	defer cancel()
+	var result struct {
+		Status string `json:"status"`
+	}
+	err := c.Call(cleanupCtx, "thread/unsubscribe", map[string]any{"threadId": threadID}, &result)
+	if err == nil && (result.Status == "unsubscribed" || result.Status == "notSubscribed" || result.Status == "notLoaded") {
+		return
+	}
+	if err == nil {
+		err = fmt.Errorf("unexpected status %q", result.Status)
+	}
+	log.Printf("app-server thread cleanup failed; recycling process: %v", err)
+	_ = c.Close()
+}
+
+func (c *Client) interruptTurn(threadID, turnID string, completed <-chan turnCompletion, cause error) error {
+	interruptCtx, cancel := context.WithTimeout(context.Background(), turnInterruptTimeout)
+	defer cancel()
+	interruptErr := c.Call(interruptCtx, "turn/interrupt", map[string]any{
+		"threadId": threadID,
+		"turnId":   turnID,
+	}, nil)
+	if interruptErr != nil {
+		select {
+		case result := <-completed:
+			return turnCompletionAfterCancellation(result, turnID, cause)
+		default:
+			return &TurnOutcomeUnknownError{Cause: fmt.Errorf("%w; interrupt failed: %v", cause, interruptErr)}
+		}
+	}
+	select {
+	case result := <-completed:
+		return turnCompletionAfterCancellation(result, turnID, cause)
+	case <-interruptCtx.Done():
+		select {
+		case result := <-completed:
+			return turnCompletionAfterCancellation(result, turnID, cause)
+		default:
+			return &TurnOutcomeUnknownError{Cause: fmt.Errorf("%w; interrupt completion was not observed", cause)}
+		}
+	}
+}
+
+func turnCompletionAfterCancellation(result turnCompletion, turnID string, cause error) error {
+	if result.err != nil {
+		return &TurnOutcomeUnknownError{Cause: fmt.Errorf("%w; %v", cause, result.err)}
+	}
+	if result.turn.ID != "" && result.turn.ID != turnID {
+		return &TurnOutcomeUnknownError{Cause: fmt.Errorf("%w; app-server completed an unexpected turn", cause)}
+	}
+	if err := completedTurnError(result.turn); err != nil {
+		return fmt.Errorf("%w; %v", cause, err)
+	}
+	return nil
+}
+
+func completedTurnError(turn appServerTurn) error {
+	if turn.Status == "completed" {
+		return nil
+	}
+	message := ""
+	if turn.Error != nil {
+		message = strings.TrimSpace(turn.Error.Message)
+	}
+	if message == "" {
+		message = "status " + turn.Status
+	}
+	return fmt.Errorf("app-server turn did not complete: %s", message)
+}
+
+func (c *Client) removeTurnWaiter(threadID string, waiter chan turnCompletion) {
+	c.turnMu.Lock()
+	if c.turns[threadID] == waiter {
+		delete(c.turns, threadID)
+	}
+	c.turnMu.Unlock()
+}
+
+func (c *Client) completeTurn(params json.RawMessage) {
+	var completed struct {
+		ThreadID string        `json:"threadId"`
+		Turn     appServerTurn `json:"turn"`
+	}
+	if json.Unmarshal(params, &completed) != nil || completed.ThreadID == "" {
+		return
+	}
+	c.turnMu.Lock()
+	waiter := c.turns[completed.ThreadID]
+	if waiter != nil {
+		delete(c.turns, completed.ThreadID)
+	}
+	c.turnMu.Unlock()
+	if waiter != nil {
+		waiter <- turnCompletion{turn: completed.Turn}
+	}
+}
+
+func (c *Client) failTurnWaiters(err error) {
+	c.turnMu.Lock()
+	waiters := make([]chan turnCompletion, 0, len(c.turns))
+	for threadID, waiter := range c.turns {
+		waiters = append(waiters, waiter)
+		delete(c.turns, threadID)
+	}
+	c.turnMu.Unlock()
+	for _, waiter := range waiters {
+		waiter <- turnCompletion{err: err}
+	}
 }
 
 func (c *Client) helloModel(ctx context.Context) (string, string) {
@@ -210,8 +430,13 @@ func (c *Client) read(cmd *exec.Cmd, r io.Reader) {
 			if ch != nil {
 				ch <- e
 			}
-		} else if e.Method != "" && c.notify != nil {
-			go c.notify(e.Method, e.Params)
+		} else if e.Method != "" {
+			if e.Method == "turn/completed" {
+				c.completeTurn(e.Params)
+			}
+			if c.notify != nil {
+				go c.notify(e.Method, e.Params)
+			}
 		}
 	}
 	c.failProcess(cmd, true)
@@ -235,6 +460,7 @@ func (c *Client) failProcess(cmd *exec.Cmd, kill bool) {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	c.failTurnWaiters(errors.New("app-server disconnected"))
 	if in != nil {
 		_ = in.Close()
 	}
@@ -327,7 +553,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, out any) e
 	select {
 	case e := <-ch:
 		if e.Error != nil {
-			return fmt.Errorf("app-server %s: %v", method, e.Error)
+			return &rpcError{method: method, detail: e.Error}
 		}
 		if out != nil {
 			return json.Unmarshal(e.Result, out)
@@ -355,6 +581,7 @@ func (c *Client) Close() error {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	c.failTurnWaiters(errors.New("app-server disconnected"))
 	if in != nil {
 		_ = in.Close()
 	}

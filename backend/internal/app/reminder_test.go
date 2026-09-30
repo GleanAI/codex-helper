@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"codex-helper/internal/codex"
 	"codex-helper/internal/security"
 	"codex-helper/internal/store"
 )
@@ -413,7 +414,7 @@ func TestAutoHelloQualifiesOnlyForUnusedFiveHourWindow(t *testing.T) {
 	}
 }
 
-func TestStoreLimitSnapshotsQueuesAutoHelloOncePerReset(t *testing.T) {
+func TestStoreLimitSnapshotsQueuesAutoHelloOncePerUnusedEpisode(t *testing.T) {
 	a := newReminderTestApp(t)
 	g := defaults()
 	g.AutoHello = true
@@ -421,12 +422,12 @@ func TestStoreLimitSnapshotsQueuesAutoHelloOncePerReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().Unix()
-	dashboard := reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))
-	if _, err := a.storeLimitSnapshots(dashboard); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.storeLimitSnapshots(dashboard); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 120; i++ {
+		fetchedAt := now + int64(i)*int64((5*time.Minute).Seconds())
+		dashboard := reminderDashboard(fetchedAt, 0, fetchedAt+int64((5*time.Hour).Seconds()))
+		if _, err := a.storeLimitSnapshots(dashboard); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var count int
 	var kind, status, body string
@@ -444,6 +445,130 @@ func TestStoreLimitSnapshotsQueuesAutoHelloOncePerReset(t *testing.T) {
 	}
 }
 
+func TestAutoHelloRetrySchedule(t *testing.T) {
+	scheduledAt := time.Now().Truncate(time.Second)
+	for attempts, delay := range autoHelloRetryDelays {
+		if due, exhausted := autoHelloRetryDue(scheduledAt.Unix(), attempts, scheduledAt.Add(delay-time.Second)); due || exhausted {
+			t.Fatalf("attempt %d was due early: due=%v exhausted=%v", attempts, due, exhausted)
+		}
+		if due, exhausted := autoHelloRetryDue(scheduledAt.Unix(), attempts, scheduledAt.Add(delay)); !due || exhausted {
+			t.Fatalf("attempt %d was not due on time: due=%v exhausted=%v", attempts, due, exhausted)
+		}
+	}
+	if due, exhausted := autoHelloRetryDue(scheduledAt.Unix(), len(autoHelloRetryDelays), scheduledAt.Add(6*time.Hour)); due || !exhausted {
+		t.Fatalf("exhausted schedule = due %v exhausted %v", due, exhausted)
+	}
+}
+
+func TestStoreLimitSnapshotsQueuesAutoHelloForNextUnusedEpisode(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now+300, 1, now+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now+600, 0, now+600+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("auto hello count = %d; want 2", count)
+	}
+}
+
+func TestStoreLimitSnapshotsDoesNotRequeueExpiredAutoHelloWhenStillUnused(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.store.DB.Exec("UPDATE notifications SET status='expired' WHERE kind='auto_hello'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now+300, 0, now+300+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	var active int
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello' AND status='staged'").Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatalf("active auto hello count = %d; want 0", active)
+	}
+}
+
+func TestStoreLimitSnapshotsDoesNotStartEpisodeWhenMetadataIsTemporarilyUnknown(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	unknown := reminderDashboard(now+300, 0, now+300+int64((5*time.Hour).Seconds()))
+	unknown.Limits[0].WindowDurationMinutes = 0
+	if _, err := a.storeLimitSnapshots(unknown); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now+600, 0, now+600+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto hello count = %d; want 1", count)
+	}
+}
+
+func TestStoreLimitSnapshotsKeepsEpisodeMarkerAfterHistoryCleanup(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.store.DB.Exec("DELETE FROM notifications; DELETE FROM limit_snapshots"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(now+300, 0, now+300+int64((5*time.Hour).Seconds()))); err != nil {
+		t.Fatal(err)
+	}
+	var notifications, markers int
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello'").Scan(&notifications); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM auto_hello_state").Scan(&markers); err != nil {
+		t.Fatal(err)
+	}
+	if notifications != 0 || markers != 1 {
+		t.Fatalf("notifications=%d markers=%d; want 0 and 1", notifications, markers)
+	}
+}
+
 func TestSendPendingRemindersSendsAutoHelloThroughAccountRuntime(t *testing.T) {
 	a := newReminderTestApp(t)
 	a.ctx = context.Background()
@@ -453,10 +578,11 @@ func TestSendPendingRemindersSendsAutoHelloThroughAccountRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &fakeCodexClient{}
-	a.runtimes[1] = &accountRuntime{client: client}
+	now := time.Now()
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
 	if _, err := a.store.DB.Exec(`INSERT INTO notifications
 		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
-		VALUES('1:codex:primary:hello','codex','auto_hello','pending',?,'Hello',1)`, time.Now().Unix()); err != nil {
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	a.sendPendingReminders(time.Now())
@@ -486,10 +612,11 @@ func TestDeletingAccountWaitsForAutoHelloSend(t *testing.T) {
 		sendStarted: make(chan struct{}, 1),
 		sendRelease: make(chan struct{}),
 	}
-	a.runtimes[1] = &accountRuntime{client: client}
+	now := time.Now()
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
 	if _, err := a.store.DB.Exec(`INSERT INTO notifications
 		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
-		VALUES('1:codex:primary:hello-delete','codex','auto_hello','pending',?,'Hello',1)`, time.Now().Unix()); err != nil {
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
 		t.Fatal(err)
 	}
 	sendDone := make(chan struct{})
@@ -526,6 +653,204 @@ func TestDeletingAccountWaitsForAutoHelloSend(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("account deletion did not finish after auto hello")
+	}
+}
+
+func TestSendPendingRemindersCollapsesDuplicateAutoHelloTasks(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	client := &fakeCodexClient{}
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
+	for i, scheduledAt := range []int64{now.Add(-time.Minute).Unix(), now.Unix()} {
+		key := fmt.Sprintf("1:codex:primary:%d:hello", 100+i)
+		if _, err := a.store.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+			VALUES(?,'codex','auto_hello','failed',?,'Hello',1)`, key, scheduledAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.sendPendingReminders(now)
+	rows, err := a.store.DB.Query("SELECT status,COUNT(*) FROM notifications WHERE kind='auto_hello' GROUP BY status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	statuses := map[string]int{}
+	for rows.Next() {
+		var status string
+		var count int
+		if err = rows.Scan(&status, &count); err != nil {
+			t.Fatal(err)
+		}
+		statuses[status] = count
+	}
+	if statuses["expired"] != 1 || statuses["sent"] != 1 {
+		t.Fatalf("statuses = %#v; want one expired and one sent", statuses)
+	}
+	_, _, _, calls := client.counts()
+	if calls != 1 {
+		t.Fatalf("SendMessage calls = %d; want 1", calls)
+	}
+}
+
+func TestSendPendingRemindersExpiresAutoHelloWhenWindowWasUsed(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	client := &fakeCodexClient{}
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 1, now.Add(5*time.Hour).Unix())}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(now)
+	var status string
+	if err := a.store.DB.QueryRow("SELECT status FROM notifications WHERE kind='auto_hello'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "expired" {
+		t.Fatalf("auto hello status = %q; want expired", status)
+	}
+	_, _, _, calls := client.counts()
+	if calls != 0 {
+		t.Fatalf("SendMessage calls = %d; want 0", calls)
+	}
+}
+
+func TestSendPendingRemindersRetriesAutoHelloWhenWindowMetadataIsUnknown(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	client := &fakeCodexClient{}
+	dashboard := reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())
+	dashboard.Limits[0].WindowDurationMinutes = 0
+	a.runtimes[1] = &accountRuntime{client: client, dash: dashboard}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(now)
+	var status string
+	if err := a.store.DB.QueryRow("SELECT status FROM notifications WHERE kind='auto_hello'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("auto hello status = %q; want failed", status)
+	}
+	_, _, _, calls := client.counts()
+	if calls != 0 {
+		t.Fatalf("SendMessage calls = %d; want 0", calls)
+	}
+}
+
+func TestSendPendingRemindersDoesNotRetryUnknownTurnOutcome(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	client := &fakeCodexClient{callError: &codex.TurnOutcomeUnknownError{Cause: errors.New("interrupt was not confirmed")}}
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(now)
+	var status string
+	if err := a.store.DB.QueryRow("SELECT status FROM notifications WHERE kind='auto_hello'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "expired" {
+		t.Fatalf("auto hello status = %q; want expired", status)
+	}
+}
+
+func TestSendPendingRemindersBacksOffFailedAutoHello(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	client := &fakeCodexClient{callError: errors.New("upstream unavailable")}
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','pending',?,'Hello',1)`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(now)
+	a.sendPendingReminders(now.Add(4 * time.Minute))
+	_, _, _, calls := client.counts()
+	if calls != 1 {
+		t.Fatalf("SendMessage calls before retry delay = %d; want 1", calls)
+	}
+	a.sendPendingReminders(now.Add(5 * time.Minute))
+	_, _, _, calls = client.counts()
+	if calls != 2 {
+		t.Fatalf("SendMessage calls after retry delay = %d; want 2", calls)
+	}
+	var status string
+	var attempts int
+	if err := a.store.DB.QueryRow("SELECT status,attempts FROM notifications WHERE kind='auto_hello'").Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 2 {
+		t.Fatalf("auto hello status=%q attempts=%d; want failed/2", status, attempts)
+	}
+}
+
+func TestSendPendingRemindersExpiresExhaustedAutoHello(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	client := &fakeCodexClient{}
+	a.runtimes[1] = &accountRuntime{client: client, dash: reminderDashboard(now.Unix(), 0, now.Add(5*time.Hour).Unix())}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,attempts,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:123:hello','codex','auto_hello','failed',7,?,'Hello',1)`, now.Add(-5*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(now)
+	var status string
+	if err := a.store.DB.QueryRow("SELECT status FROM notifications WHERE kind='auto_hello'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "expired" {
+		t.Fatalf("auto hello status = %q; want expired", status)
+	}
+	_, _, _, calls := client.counts()
+	if calls != 0 {
+		t.Fatalf("SendMessage calls = %d; want 0", calls)
 	}
 }
 

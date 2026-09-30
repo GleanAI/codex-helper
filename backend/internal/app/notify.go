@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"codex-helper/internal/codex"
 )
 
 type notificationEvent struct {
@@ -38,6 +40,18 @@ type notificationWindow struct {
 	UsedPercent           float64 `json:"usedPercent"`
 	ResetsAt              int64   `json:"resetsAt"`
 }
+
+type autoHelloTaskIdentity struct {
+	accountID  int64
+	limitID    string
+	windowType string
+}
+
+var (
+	errAutoHelloNoLongerNeeded = errors.New("5 小时窗口已不再处于未使用状态")
+	errAutoHelloStateUnknown   = errors.New("5 小时窗口状态暂不可确认")
+	autoHelloRetryDelays       = []time.Duration{0, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour}
+)
 
 func (a *App) smtpSettings() SMTPSettings {
 	var s SMTPSettings
@@ -551,12 +565,15 @@ func (a *App) processReminders() {
 
 func (a *App) sendPendingReminders(now time.Time) {
 	type pendingReminder struct {
-		key       string
-		kind      string
-		body      string
-		accountID int64
+		key         string
+		kind        string
+		body        string
+		accountID   int64
+		scheduledAt int64
+		attempts    int
+		autoHello   autoHelloTaskIdentity
 	}
-	rows, err := a.store.DB.Query(`SELECT n.dedupe_key,n.kind,n.body,n.account_id FROM notifications n
+	rows, err := a.store.DB.Query(`SELECT n.dedupe_key,n.kind,n.body,n.account_id,n.scheduled_at,n.attempts FROM notifications n
 		JOIN accounts a ON a.id=n.account_id
 		WHERE n.status IN ('pending','failed') AND n.scheduled_at<=? AND n.scheduled_at>=? ORDER BY n.scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
 	if err != nil {
@@ -565,26 +582,75 @@ func (a *App) sendPendingReminders(now time.Time) {
 	pending := []pendingReminder{}
 	for rows.Next() {
 		var p pendingReminder
-		if rows.Scan(&p.key, &p.kind, &p.body, &p.accountID) == nil && p.body != "" {
+		if rows.Scan(&p.key, &p.kind, &p.body, &p.accountID, &p.scheduledAt, &p.attempts) == nil && p.body != "" {
 			pending = append(pending, p)
 		}
 	}
 	_ = rows.Close()
-	for _, p := range pending {
+	superseded := map[int]bool{}
+	latestAutoHello := map[autoHelloTaskIdentity]int{}
+	for i := range pending {
+		if pending[i].kind != "auto_hello" {
+			continue
+		}
+		identity, ok := parseAutoHelloTaskKey(pending[i].key, pending[i].accountID)
+		if !ok {
+			superseded[i] = true
+			_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, pending[i].key)
+			continue
+		}
+		pending[i].autoHello = identity
+		if previous, exists := latestAutoHello[identity]; exists {
+			keep, discard := i, previous
+			if pending[previous].scheduledAt > pending[i].scheduledAt ||
+				(pending[previous].scheduledAt == pending[i].scheduledAt && pending[previous].key > pending[i].key) {
+				keep, discard = previous, i
+			}
+			superseded[discard] = true
+			_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, pending[discard].key)
+			latestAutoHello[identity] = keep
+			continue
+		}
+		latestAutoHello[identity] = i
+	}
+	for i, p := range pending {
+		if superseded[i] {
+			continue
+		}
 		if p.kind == "auto_hello" {
 			if !a.general().AutoHello {
 				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, p.key)
 				continue
 			}
-			err := a.sendAutoHello(p.accountID, p.body)
+			due, exhausted := autoHelloRetryDue(p.scheduledAt, p.attempts, now)
+			if exhausted {
+				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired' WHERE dedupe_key=?`, p.key)
+				continue
+			}
+			if !due {
+				continue
+			}
+			err := a.sendAutoHello(p.autoHello, p.body)
+			if errors.Is(err, errAutoHelloNoLongerNeeded) {
+				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='',sent_at=NULL WHERE dedupe_key=?`, p.key)
+				continue
+			}
+			if errors.Is(err, errAutoHelloStateUnknown) {
+				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='failed',last_error=?,sent_at=NULL WHERE dedupe_key=?`, errorText(err), p.key)
+				continue
+			}
 			status := "sent"
 			var sent any = now.Unix()
+			attempts := p.attempts + 1
 			if err != nil {
 				status = "failed"
 				sent = nil
+				if codex.IsTurnOutcomeUnknown(err) || attempts >= len(autoHelloRetryDelays) {
+					status = "expired"
+				}
 			}
-			_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=attempts+1,last_error=?,sent_at=? WHERE dedupe_key=?`,
-				status, errorText(err), sent, p.key)
+			_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=?,last_error=?,sent_at=? WHERE dedupe_key=?`,
+				status, attempts, errorText(err), sent, p.key)
 			continue
 		}
 		event, structured := decodeNotification(p.body)
@@ -622,26 +688,77 @@ func (a *App) sendPendingReminders(now time.Time) {
 	}
 }
 
-func (a *App) sendAutoHello(accountID int64, message string) error {
-	rt := a.runtime(accountID)
+func autoHelloRetryDue(scheduledAt int64, attempts int, now time.Time) (bool, bool) {
+	if attempts < 0 || attempts >= len(autoHelloRetryDelays) {
+		return false, true
+	}
+	next := time.Unix(scheduledAt, 0).Add(autoHelloRetryDelays[attempts])
+	return !now.Before(next), false
+}
+
+func parseAutoHelloTaskKey(key string, accountID int64) (autoHelloTaskIdentity, bool) {
+	identity := autoHelloTaskIdentity{accountID: accountID}
+	base, ok := strings.CutSuffix(key, ":hello")
+	if !ok {
+		return identity, false
+	}
+	resetSeparator := strings.LastIndexByte(base, ':')
+	if resetSeparator < 0 {
+		return identity, false
+	}
+	if _, err := strconv.ParseInt(base[resetSeparator+1:], 10, 64); err != nil {
+		return identity, false
+	}
+	base = base[:resetSeparator]
+	accountPrefix := strconv.FormatInt(accountID, 10) + ":"
+	if !strings.HasPrefix(base, accountPrefix) {
+		return identity, false
+	}
+	limitAndWindow := strings.TrimPrefix(base, accountPrefix)
+	windowSeparator := strings.LastIndexByte(limitAndWindow, ':')
+	if windowSeparator <= 0 || windowSeparator == len(limitAndWindow)-1 {
+		return identity, false
+	}
+	identity.limitID = limitAndWindow[:windowSeparator]
+	identity.windowType = limitAndWindow[windowSeparator+1:]
+	return identity, true
+}
+
+func (a *App) sendAutoHello(task autoHelloTaskIdentity, message string) error {
+	rt := a.runtime(task.accountID)
 	if rt == nil {
 		return errors.New("账号不存在")
 	}
 	rt.syncing.Lock()
 	defer rt.syncing.Unlock()
-	parent := a.ctx
-	if parent == nil {
-		parent = context.Background()
+	if rt.dash.Stale || rt.dash.FetchedAt <= 0 {
+		return errAutoHelloStateUnknown
 	}
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-	defer cancel()
-	if err := rt.ensureReady(ctx); err != nil {
-		return err
+	for _, limit := range rt.dash.Limits {
+		if limit.LimitID != task.limitID || limit.WindowType != task.windowType {
+			continue
+		}
+		if limit.UsedPercent > 0 {
+			return errAutoHelloNoLongerNeeded
+		}
+		if !qualifiesForAutoHello(limit, rt.dash.FetchedAt) {
+			return errAutoHelloStateUnknown
+		}
+		parent := a.ctx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
+		if err := rt.ensureReady(ctx); err != nil {
+			return err
+		}
+		if strings.TrimSpace(message) == "" {
+			message = "Hello"
+		}
+		return rt.client.SendMessage(ctx, message)
 	}
-	if strings.TrimSpace(message) == "" {
-		message = "Hello"
-	}
-	return rt.client.SendMessage(ctx, message)
+	return errAutoHelloStateUnknown
 }
 
 func errorText(err error) string {

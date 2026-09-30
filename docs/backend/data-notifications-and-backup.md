@@ -27,7 +27,7 @@
 
 处理器每分钟为当前 Dashboard 生成到期提醒，并只发送 `scheduled_at` 后六小时内的未发送记录。Telegram 与 SMTP 中任何启用渠道失败都会把记录标记为 failed，后续周期在窗口内重试；全部启用渠道成功才标记 sent。稳定 key 和 `INSERT OR IGNORE` 是防重复边界。
 
-通用设置启用 `autoHello` 后，限额快照会为每个账号符合以下条件的 5 小时窗口创建 `auto_hello` staged 任务：窗口为 300 分钟、`usedPercent` 为零，且 `resetsAt` 与抓取时间相差 5 小时 ±5 分钟。任务 key 包含账号、限额、窗口类型和 `resetsAt`，同一周期最多发送一次。账号同步成功发布 Dashboard 后任务才进入 pending；发送通过该账号的 app-server 独立低 effort turn 完成，失败任务沿用六小时重试窗口。
+通用设置启用 `autoHello` 后，限额快照会为每个账号符合以下条件的 5 小时窗口创建 `auto_hello` staged 任务：窗口为 300 分钟、`usedPercent` 为零，且 `resetsAt` 与抓取时间相差 5 小时 ±5 分钟。独立的 `auto_hello_state` 标记会保留到明确观测到该窗口非零用量，因此可选元数据短暂缺失、未启动窗口的 `resetsAt` 持续滑动以及普通历史清理都不会开启重复阶段；非零用量之后再次进入未使用状态才会开启下一阶段。账号同步成功发布 Dashboard 后任务才进入 pending；发送前再次核对最新 Dashboard，元数据暂不可确认时保留任务，明确非零时才将任务标记为 expired，并把同账号、限额和窗口的旧重复任务一并淘汰。发送通过该账号的 app-server 独立低 effort 只读 ephemeral turn 完成，只有 `turn/completed` 的最终状态为 `completed` 才标记 sent；超时时使用 `turn/interrupt` 并等待终态，仍无法确认结果时停止自动重试以免重复消耗额度。已确认失败的任务从首次计划时间起按 0、5、15、30、60、120、240 分钟退避，六小时内最多尝试七次；每次获得 thread ID 后都会取消订阅，取消订阅失败则回收该账号的 app-server 进程。
 
 ## Telegram 与 SMTP
 
