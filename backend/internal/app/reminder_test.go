@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,6 +387,148 @@ func reminderDashboard(fetchedAt int64, used float64, resetsAt int64) Dashboard 
 	}
 }
 
+func TestAutoHelloQualifiesOnlyForUnusedFiveHourWindow(t *testing.T) {
+	now := time.Now().Unix()
+	for _, test := range []struct {
+		name       string
+		used       float64
+		resetDelta time.Duration
+		want       bool
+	}{
+		{name: "exact", used: 0, resetDelta: 5 * time.Hour, want: true},
+		{name: "within tolerance", used: 0, resetDelta: 5*time.Hour - 5*time.Minute, want: true},
+		{name: "used", used: 0.01, resetDelta: 5 * time.Hour, want: false},
+		{name: "shortened after small use", used: 0, resetDelta: 4*time.Hour + 54*time.Minute, want: false},
+		{name: "outside tolerance", used: 0, resetDelta: 5*time.Hour + 6*time.Minute, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			limit := LimitBucket{WindowDurationMinutes: 300, UsedPercent: test.used, ResetsAt: now + int64(test.resetDelta.Seconds())}
+			if got := qualifiesForAutoHello(limit, now); got != test.want {
+				t.Fatalf("qualifiesForAutoHello() = %v; want %v", got, test.want)
+			}
+		})
+	}
+	if qualifiesForAutoHello(LimitBucket{WindowDurationMinutes: 10080, ResetsAt: now + int64((5 * time.Hour).Seconds())}, now) {
+		t.Fatal("non-five-hour window qualified")
+	}
+}
+
+func TestStoreLimitSnapshotsQueuesAutoHelloOncePerReset(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	dashboard := reminderDashboard(now, 0, now+int64((5*time.Hour).Seconds()))
+	if _, err := a.storeLimitSnapshots(dashboard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(dashboard); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	var kind, status, body string
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("auto hello count = %d; want 1", count)
+	}
+	if err := a.store.DB.QueryRow("SELECT kind,status,body FROM notifications").Scan(&kind, &status, &body); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "auto_hello" || status != "staged" || body != "Hello" {
+		t.Fatalf("notification = kind %q status %q body %q", kind, status, body)
+	}
+}
+
+func TestSendPendingRemindersSendsAutoHelloThroughAccountRuntime(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeCodexClient{}
+	a.runtimes[1] = &accountRuntime{client: client}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:hello','codex','auto_hello','pending',?,'Hello',1)`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	a.sendPendingReminders(time.Now())
+	var status string
+	if err := a.store.DB.QueryRow("SELECT status FROM notifications WHERE kind='auto_hello'").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" {
+		t.Fatalf("auto hello status = %q; want sent", status)
+	}
+	_, _, _, calls := client.counts()
+	if calls == 0 {
+		t.Fatal("auto hello did not call the account runtime")
+	}
+}
+
+func TestDeletingAccountWaitsForAutoHelloSend(t *testing.T) {
+	a := newReminderTestApp(t)
+	a.dataDir = t.TempDir()
+	a.ctx = context.Background()
+	g := defaults()
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeCodexClient{
+		sendStarted: make(chan struct{}, 1),
+		sendRelease: make(chan struct{}),
+	}
+	a.runtimes[1] = &accountRuntime{client: client}
+	if _, err := a.store.DB.Exec(`INSERT INTO notifications
+		(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:hello-delete','codex','auto_hello','pending',?,'Hello',1)`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	sendDone := make(chan struct{})
+	go func() {
+		a.processReminders()
+		close(sendDone)
+	}()
+	select {
+	case <-client.sendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("auto hello send did not start")
+	}
+	deleteDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		a.accountAPI(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/accounts/1", nil), "accounts/1")
+		deleteDone <- recorder
+	}()
+	select {
+	case <-deleteDone:
+		t.Fatal("account deletion completed while auto hello was sending")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(client.sendRelease)
+	select {
+	case <-sendDone:
+	case <-time.After(time.Second):
+		t.Fatal("auto hello sender did not finish")
+	}
+	select {
+	case recorder := <-deleteDone:
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("delete status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("account deletion did not finish after auto hello")
+	}
+}
+
 func notificationCount(t *testing.T, a *App) int {
 	t.Helper()
 	var count int
@@ -409,7 +552,7 @@ func TestStoreLimitSnapshotsDetectsEarlyReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	event, ok := decodeNotification(body)
-	if kind != "detected_after" || !ok || !event.Confirmed || event.PreviousUsed != 42 || event.Used != 3 || event.Account != "测试账号" {
+	if kind != "detected_after" || !ok || !event.Confirmed || event.PreviousUsed != 42 || event.Used != 3 || event.Account != "测试账号" || len(event.Windows) != 1 {
 		t.Fatalf("notification kind=%q body=%q", kind, body)
 	}
 }
@@ -465,6 +608,55 @@ func TestNotificationFormatting(t *testing.T) {
 	}
 	if !strings.Contains(telegram, "A &lt; B") || !strings.Contains(email, "multipart") && !strings.Contains(email, "Codex Helper") {
 		t.Fatalf("output was not escaped or rendered: telegram=%q email=%q", telegram, email)
+	}
+}
+
+func TestAutomaticTelegramReminderIncludesAllWindows(t *testing.T) {
+	now := time.Date(2026, 9, 30, 4, 47, 0, 0, time.UTC)
+	reserve := "gpt-reserve"
+	preview := "Review <preview>"
+	windows := []notificationWindow{
+		{LimitName: &reserve, WindowDurationMinutes: 10080, UsedPercent: 0, ResetsAt: now.Add(7 * 24 * time.Hour).Unix()},
+		{LimitName: &preview, WindowDurationMinutes: 0, UsedPercent: 50, ResetsAt: now.Add(30 * time.Minute).Unix()},
+		{WindowDurationMinutes: 10080, UsedPercent: 11, ResetsAt: now.Add(4*24*time.Hour + time.Hour).Unix()},
+		{WindowDurationMinutes: 300, UsedPercent: 0, ResetsAt: now.Add(5 * time.Hour).Unix()},
+	}
+
+	for _, test := range []struct {
+		kind  string
+		title string
+	}{
+		{kind: "before", title: "Codex 即将重置"},
+		{kind: "after", title: "Codex 额度已重置"},
+		{kind: "detected_after", title: "Codex 额度已重置"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			event := notificationEvent{Version: 1, Kind: test.kind, Confirmed: test.kind != "before", Account: "GPT <plus>", DurationMins: 300, Remaining: 100, ResetsAt: windows[3].ResetsAt, Windows: windows}
+			plain, telegram, subject, email := renderNotification(event, "", "Asia/Shanghai", now)
+			if subject != test.title || !strings.Contains(telegram, test.title) || !strings.Contains(telegram, "GPT &lt;plus&gt;") {
+				t.Fatalf("unexpected reminder heading: subject=%q telegram=%q", subject, telegram)
+			}
+			labels := []string{"5 小时窗口", "7 天窗口", "gpt-reserve · 7 天窗口", "Review &lt;preview&gt; · 限额窗口"}
+			previous := -1
+			for _, label := range labels {
+				index := strings.Index(telegram, label)
+				if index <= previous {
+					t.Fatalf("label %q was missing or out of order: %q", label, telegram)
+				}
+				previous = index
+			}
+			for _, expected := range []string{"剩余 100.0%", "剩余 89.0%", "还有 5 小时 0 分", "还有 7 天 0 小时"} {
+				if !strings.Contains(telegram, expected) {
+					t.Fatalf("Telegram reminder lost %q: %q", expected, telegram)
+				}
+			}
+			if !strings.Contains(plain, "额度：5 小时额度") || !strings.Contains(email, "5 小时额度") || strings.Contains(plain, "gpt-reserve") || strings.Contains(email, "gpt-reserve") {
+				t.Fatalf("non-Telegram bodies unexpectedly changed: plain=%q email=%q", plain, email)
+			}
+			if windows[0].LimitName != &reserve {
+				t.Fatalf("input windows were reordered: %#v", windows)
+			}
+		})
 	}
 }
 
@@ -578,6 +770,38 @@ func TestProcessRemindersDoesNotScheduleAfterFromExpiredDashboard(t *testing.T) 
 	a.processReminders()
 	if count := notificationCount(t, a); count != 0 {
 		t.Fatalf("notifications = %d", count)
+	}
+}
+
+func TestProcessRemindersStoresAllWindowSnapshots(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.NotifyBefore = true
+	g.BeforeMinutes = 30
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	reserve := "gpt-reserve"
+	dashboard := Dashboard{
+		AccountID:   1,
+		DisplayName: "测试账号",
+		FetchedAt:   now.Unix(),
+		Limits: []LimitBucket{
+			{LimitID: "codex", WindowType: "primary", WindowDurationMinutes: 300, UsedPercent: 25, ResetsAt: now.Add(15 * time.Minute).Unix()},
+			{LimitID: "gpt-reserve", LimitName: &reserve, WindowType: "secondary", WindowDurationMinutes: 10080, UsedPercent: 10, ResetsAt: now.Add(7 * 24 * time.Hour).Unix()},
+		},
+	}
+	a.runtimes[1] = &accountRuntime{dash: dashboard}
+	a.processReminders()
+
+	var body string
+	if err := a.store.DB.QueryRow("SELECT body FROM notifications").Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	event, ok := decodeNotification(body)
+	if !ok || len(event.Windows) != 2 || event.Windows[0].UsedPercent != 25 || event.Windows[1].LimitName == nil || *event.Windows[1].LimitName != reserve {
+		t.Fatalf("notification did not store the complete window snapshot: %#v", event)
 	}
 }
 

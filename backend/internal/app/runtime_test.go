@@ -267,6 +267,8 @@ type fakeCodexClient struct {
 	callError   error
 	initStarted chan struct{}
 	initRelease chan struct{}
+	sendStarted chan struct{}
+	sendRelease chan struct{}
 }
 
 type blockingSyncClient struct {
@@ -328,6 +330,27 @@ func (f *fakeCodexClient) Call(_ context.Context, method string, _ any, out any)
 		return json.Unmarshal([]byte(`{"type":"chatgptDeviceCode","loginId":"login-1","verificationUrl":"https://example.test/device","userCode":"ABCD-EFGH"}`), out)
 	}
 	return nil
+}
+
+func (f *fakeCodexClient) SendMessage(ctx context.Context, _ string) error {
+	f.mu.Lock()
+	f.calls++
+	started, release := f.sendStarted, f.sendRelease
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return f.callError
 }
 
 func TestSyncFailureMarksExistingDashboardStale(t *testing.T) {

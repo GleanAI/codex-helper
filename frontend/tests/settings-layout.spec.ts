@@ -16,6 +16,7 @@ const responses: Record<string, unknown> = {
     beforeMinutes: 30,
     notifyBefore: true,
     notifyAfter: true,
+    autoHello: false,
   },
   accounts: [
     {
@@ -101,6 +102,19 @@ test("shows the build version in the authenticated brand", async ({ page }) => {
   expect(layout.iconWidth).toBe(mobile ? 22 : 30);
   expect(layout.iconHeight).toBe(mobile ? 22 : 30);
   expect(layout.iconFlexShrink).toBe("0");
+});
+
+test("exposes the automatic Hello switch in general settings", async ({
+  page,
+}) => {
+  await openSettings(page);
+  const toggle = page.getByRole("checkbox", {
+    name: "5 小时窗口未使用时自动发送 Hello",
+  });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(toggle).toBeChecked();
 });
 
 test("keeps the authenticated brand on one line with a release version", async ({

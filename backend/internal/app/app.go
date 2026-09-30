@@ -64,6 +64,7 @@ type codexClient interface {
 	Start(context.Context) error
 	Initialize(context.Context) error
 	Call(context.Context, string, any, any) error
+	SendMessage(context.Context, string) error
 	Close() error
 	Connected() bool
 }

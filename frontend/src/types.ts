@@ -115,6 +115,7 @@ export interface GeneralSettings {
   beforeMinutes: number;
   notifyBefore: boolean;
   notifyAfter: boolean;
+  autoHello: boolean;
 }
 export interface TelegramSettingsResponse {
   chatId: number;
@@ -333,6 +334,7 @@ export const decodeGeneral: Decoder<GeneralSettings> = (value) => {
     beforeMinutes: number(x.beforeMinutes, "beforeMinutes"),
     notifyBefore: boolean(x.notifyBefore, "notifyBefore"),
     notifyAfter: boolean(x.notifyAfter, "notifyAfter"),
+    autoHello: x.autoHello == null ? false : boolean(x.autoHello, "autoHello"),
   };
 };
 export const decodeAuthProfile: Decoder<AuthProfile> = (value) => {

@@ -8,6 +8,7 @@ type GeneralSettings struct {
 	BeforeMinutes int    `json:"beforeMinutes"`
 	NotifyBefore  bool   `json:"notifyBefore"`
 	NotifyAfter   bool   `json:"notifyAfter"`
+	AutoHello     bool   `json:"autoHello"`
 }
 type SMTPSettings struct {
 	Host       string `json:"host"`

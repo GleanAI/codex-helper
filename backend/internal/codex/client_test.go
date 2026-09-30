@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -24,6 +25,45 @@ type blockedWriteCloser struct {
 	startedOnce sync.Once
 	releaseOnce sync.Once
 }
+
+type scriptedWriteCloser struct {
+	client   *Client
+	requests []map[string]any
+}
+
+func (w *scriptedWriteCloser) Write(p []byte) (int, error) {
+	var request struct {
+		ID     int64  `json:"id"`
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(p, &request); err != nil {
+		return 0, err
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(p, &decoded); err != nil {
+		return 0, err
+	}
+	w.requests = append(w.requests, decoded)
+	var result string
+	switch request.Method {
+	case "model/list":
+		result = `{"data":[{"id":"gpt-6-luna","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]}`
+	case "thread/start":
+		result = `{"thread":{"id":"thread-1"}}`
+	case "turn/start":
+		result = `{}`
+	default:
+		return 0, errors.New("unexpected method: " + request.Method)
+	}
+	w.client.mu.Lock()
+	response := w.client.pending[request.ID]
+	delete(w.client.pending, request.ID)
+	w.client.mu.Unlock()
+	response <- envelope{Result: json.RawMessage(result)}
+	return len(p), nil
+}
+
+func (w *scriptedWriteCloser) Close() error { return nil }
 
 func (w *blockedWriteCloser) Write([]byte) (int, error) {
 	w.startedOnce.Do(func() { close(w.started) })
@@ -66,6 +106,55 @@ func TestEnsureConfigDirReportsCreationFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create CODEX_HOME") || !strings.Contains(err.Error(), dir) {
 		t.Fatalf("error = %q; want CODEX_HOME path context", err)
+	}
+}
+
+func TestSelectHelloModelPrefersLowCostModelAndLowestEffort(t *testing.T) {
+	models := []modelInfo{
+		{ID: "gpt-6.1-sol", IsDefault: true, SupportedReasoningEfforts: []struct {
+			ReasoningEffort string `json:"reasoningEffort"`
+		}{{ReasoningEffort: "medium"}}},
+		{ID: "gpt-6-luna", SupportedReasoningEfforts: []struct {
+			ReasoningEffort string `json:"reasoningEffort"`
+		}{{ReasoningEffort: "low"}, {ReasoningEffort: "medium"}}},
+	}
+	model, effort := selectHelloModel(models)
+	if model != "gpt-6-luna" || effort != "low" {
+		t.Fatalf("selected model=%q effort=%q; want gpt-6-luna/low", model, effort)
+	}
+}
+
+func TestSelectHelloModelFallsBackToDefault(t *testing.T) {
+	model, effort := selectHelloModel([]modelInfo{{ID: "gpt-6.1-sol", IsDefault: true}})
+	if model != "gpt-6.1-sol" || effort != "" {
+		t.Fatalf("selected model=%q effort=%q; want default without effort", model, effort)
+	}
+}
+
+func TestSendMessageUsesReadOnlySandbox(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	writer := &scriptedWriteCloser{client: c}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	if err := c.SendMessage(context.Background(), "Hello"); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.requests) != 3 {
+		t.Fatalf("request count = %d; want 3", len(writer.requests))
+	}
+	threadParams := writer.requests[1]["params"].(map[string]any)
+	if threadParams["sandbox"] != "read-only" {
+		t.Fatalf("thread sandbox = %#v; want read-only", threadParams["sandbox"])
+	}
+	turnParams := writer.requests[2]["params"].(map[string]any)
+	sandboxPolicy := turnParams["sandboxPolicy"].(map[string]any)
+	if sandboxPolicy["type"] != "read-only" {
+		t.Fatalf("turn sandbox = %#v; want read-only", sandboxPolicy["type"])
+	}
+	input := turnParams["input"].([]any)
+	if input[0].(map[string]any)["text"] != "Hello" {
+		t.Fatalf("input = %#v; want Hello", input)
 	}
 }
 

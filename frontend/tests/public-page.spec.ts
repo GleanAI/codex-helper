@@ -471,6 +471,7 @@ test("后台路径使用独立登录入口并在登录后进入总览", async ({
           beforeMinutes: 30,
           notifyBefore: true,
           notifyAfter: true,
+          autoHello: false,
         },
       });
     return route.fulfill({ status: 404, json: { error: "接口不存在" } });

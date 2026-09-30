@@ -225,13 +225,13 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 		a.mu.Lock()
 		delete(a.runtimes, id)
 		a.mu.Unlock()
-		rt.stop()
-		rt.syncing.Lock()
 		a.reminderSendMu.Lock()
+		rt.syncing.Lock()
+		rt.stop()
 		e = a.store.DeleteAccount(id)
-		a.reminderSendMu.Unlock()
 		if e != nil {
 			rt.syncing.Unlock()
+			a.reminderSendMu.Unlock()
 			a.addRuntime(id)
 			break
 		}
@@ -246,6 +246,7 @@ func (a *App) accountAPI(w http.ResponseWriter, r *http.Request, p string) {
 			jsonOut(w, 200, map[string]bool{"ok": true})
 		}
 		rt.syncing.Unlock()
+		a.reminderSendMu.Unlock()
 	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "POST":
 		a.deviceLogin(w, r, id)
 	case action == "login" && len(parts) > 3 && parts[3] == "device" && r.Method == "GET":
@@ -640,6 +641,7 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, 200, a.general())
 		return
 	}
+	previous := a.general()
 	var g GeneralSettings
 	if decode(w, r, &g) != nil || g.SyncMinutes < 1 || g.SyncMinutes > 60 || g.RetentionDays < 30 || g.RetentionDays > 365 || g.BeforeMinutes < 1 || g.BeforeMinutes > 1440 {
 		jsonOut(w, 400, map[string]string{"error": "设置值不合法"})
@@ -650,6 +652,12 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.store.SetJSON("general", g)
+	if previous.AutoHello && !g.AutoHello {
+		a.reminderSendMu.Lock()
+		_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error=''
+			WHERE kind='auto_hello' AND status IN ('staged','pending','failed')`)
+		a.reminderSendMu.Unlock()
+	}
 	jsonOut(w, 200, g)
 }
 func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
@@ -857,6 +865,11 @@ func (a *App) dailyUsageHistory(accountID int64, now time.Time) ([]UsagePoint, e
 
 const resetDropTolerance = 0.01
 
+const (
+	autoHelloWindowMinutes = 5 * 60
+	autoHelloTolerance     = 5 * time.Minute
+)
+
 func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 	tx, err := a.store.DB.Begin()
 	if err != nil {
@@ -865,6 +878,7 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 	defer tx.Rollback()
 	g := a.general()
 	resetNotifications := []string{}
+	windows := notificationWindows(d.Limits)
 	for _, x := range d.Limits {
 		var previousID, previousFetchedAt, previousResetsAt int64
 		var previousUsed float64
@@ -875,6 +889,24 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 			return nil, err
 		}
 		age := d.FetchedAt - previousFetchedAt
+		if g.AutoHello && qualifiesForAutoHello(x, d.FetchedAt) {
+			key := fmt.Sprintf("%d:%s:%s:%d:hello", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt)
+			var status string
+			statusErr := tx.QueryRow("SELECT status FROM notifications WHERE dedupe_key=?", key).Scan(&status)
+			switch {
+			case statusErr == sql.ErrNoRows:
+				_, err = tx.Exec(`INSERT INTO notifications
+					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+					VALUES(?, 'codex', 'auto_hello', 'staged', 0, '', ?, NULL, 'Hello', ?)`, key, d.FetchedAt, d.AccountID)
+			case statusErr != nil:
+				err = statusErr
+			case status == "expired":
+				_, err = tx.Exec(`UPDATE notifications SET status='staged',attempts=0,last_error='',scheduled_at=?,sent_at=NULL,body='Hello',account_id=? WHERE dedupe_key=?`, d.FetchedAt, d.AccountID, key)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
 		if err == nil && g.NotifyAfter {
 			withinScheduledWindow := previousResetsAt > 0 && previousResetsAt <= d.FetchedAt && d.FetchedAt-previousResetsAt <= int64((6*time.Hour).Seconds())
 			normalReset := withinScheduledWindow && x.ResetsAt > previousResetsAt && x.ResetsAt > d.FetchedAt
@@ -887,7 +919,7 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 					key = fmt.Sprintf("%d:%s:%s:%d:after", d.AccountID, x.LimitID, x.WindowType, previousResetsAt)
 				}
 				event := notificationEvent{Version: 1, Kind: kind, Confirmed: true, Account: d.DisplayName, DurationMins: x.WindowDurationMinutes,
-					Remaining: 100 - x.UsedPercent, PreviousUsed: previousUsed, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
+					Remaining: 100 - x.UsedPercent, PreviousUsed: previousUsed, Used: x.UsedPercent, ResetsAt: x.ResetsAt, Windows: windows}
 				body, _ := json.Marshal(event)
 				_, err = tx.Exec(`INSERT OR IGNORE INTO notifications
 					(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
@@ -906,6 +938,18 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 		return nil, err
 	}
 	return resetNotifications, nil
+}
+
+func qualifiesForAutoHello(limit LimitBucket, fetchedAt int64) bool {
+	if limit.WindowDurationMinutes != autoHelloWindowMinutes || limit.UsedPercent > 0 || limit.ResetsAt <= fetchedAt {
+		return false
+	}
+	delta := limit.ResetsAt - fetchedAt
+	if delta < 0 {
+		delta = -delta
+	}
+	return time.Duration(delta)*time.Second >= 5*time.Hour-autoHelloTolerance &&
+		time.Duration(delta)*time.Second <= 5*time.Hour+autoHelloTolerance
 }
 
 type rawLimit struct {

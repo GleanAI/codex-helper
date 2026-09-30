@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -77,6 +78,121 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return e
 	}
 	return c.send(ctx, map[string]any{"method": "initialized", "params": map[string]any{}})
+}
+
+type modelInfo struct {
+	ID                        string `json:"id"`
+	Model                     string `json:"model"`
+	IsDefault                 bool   `json:"isDefault"`
+	Hidden                    bool   `json:"hidden"`
+	DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+	SupportedReasoningEfforts []struct {
+		ReasoningEffort string `json:"reasoningEffort"`
+	} `json:"supportedReasoningEfforts"`
+}
+
+type modelListResponse struct {
+	Data []modelInfo `json:"data"`
+}
+
+const preferredHelloModel = "gpt-6-luna"
+
+// SendMessage starts a short, isolated turn for an automated message. The
+// model catalog is optional because older app-server versions may not expose
+// model/list; the fixed low-cost model remains the first compatibility choice.
+func (c *Client) SendMessage(ctx context.Context, message string) error {
+	model, effort := c.helloModel(ctx)
+	activeModel := model
+	threadParams := map[string]any{
+		"approvalPolicy": "never",
+		"sandbox":        "read-only",
+	}
+	if model != "" {
+		threadParams["model"] = model
+	}
+	var thread struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := c.Call(ctx, "thread/start", threadParams, &thread); err != nil {
+		if model != "" {
+			delete(threadParams, "model")
+			if fallbackErr := c.Call(ctx, "thread/start", threadParams, &thread); fallbackErr != nil {
+				return err
+			}
+			activeModel = ""
+			effort = ""
+		} else {
+			return err
+		}
+	}
+	if thread.Thread.ID == "" {
+		return errors.New("app-server thread/start returned no thread")
+	}
+	turnParams := map[string]any{
+		"threadId":       thread.Thread.ID,
+		"input":          []map[string]string{{"type": "text", "text": message}},
+		"approvalPolicy": "never",
+		"sandboxPolicy":  map[string]any{"type": "read-only"},
+	}
+	if activeModel != "" {
+		turnParams["model"] = activeModel
+	}
+	if effort != "" {
+		turnParams["effort"] = effort
+	}
+	return c.Call(ctx, "turn/start", turnParams, nil)
+}
+
+func (c *Client) helloModel(ctx context.Context) (string, string) {
+	var listed modelListResponse
+	if err := c.Call(ctx, "model/list", map[string]any{"limit": 20, "includeHidden": false}, &listed); err != nil {
+		return preferredHelloModel, "low"
+	}
+	return selectHelloModel(listed.Data)
+}
+
+func selectHelloModel(models []modelInfo) (string, string) {
+	var fallback *modelInfo
+	for i := range models {
+		model := &models[i]
+		if model.Hidden {
+			continue
+		}
+		id := strings.ToLower(model.ID)
+		if id == "" {
+			id = strings.ToLower(model.Model)
+		}
+		if id == preferredHelloModel || strings.Contains(id, "mini") || strings.Contains(id, "luna") {
+			return modelName(*model), lowestEffort(*model)
+		}
+		if fallback == nil || model.IsDefault {
+			fallback = model
+		}
+	}
+	if fallback == nil {
+		return preferredHelloModel, "low"
+	}
+	return modelName(*fallback), lowestEffort(*fallback)
+}
+
+func modelName(model modelInfo) string {
+	if model.ID != "" {
+		return model.ID
+	}
+	return model.Model
+}
+
+func lowestEffort(model modelInfo) string {
+	for _, candidate := range []string{"minimal", "low", "medium", "high", "xhigh"} {
+		for _, supported := range model.SupportedReasoningEfforts {
+			if supported.ReasoningEffort == candidate {
+				return candidate
+			}
+		}
+	}
+	return ""
 }
 func (c *Client) read(cmd *exec.Cmd, r io.Reader) {
 	s := bufio.NewScanner(r)

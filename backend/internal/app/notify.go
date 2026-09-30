@@ -20,15 +20,23 @@ import (
 )
 
 type notificationEvent struct {
-	Version      int     `json:"version"`
-	Kind         string  `json:"kind"`
-	Confirmed    bool    `json:"confirmed,omitempty"`
-	Account      string  `json:"account"`
-	DurationMins int     `json:"durationMinutes"`
-	Remaining    float64 `json:"remainingPercent"`
-	PreviousUsed float64 `json:"previousUsedPercent,omitempty"`
-	Used         float64 `json:"usedPercent,omitempty"`
-	ResetsAt     int64   `json:"resetsAt"`
+	Version      int                  `json:"version"`
+	Kind         string               `json:"kind"`
+	Confirmed    bool                 `json:"confirmed,omitempty"`
+	Account      string               `json:"account"`
+	DurationMins int                  `json:"durationMinutes"`
+	Remaining    float64              `json:"remainingPercent"`
+	PreviousUsed float64              `json:"previousUsedPercent,omitempty"`
+	Used         float64              `json:"usedPercent,omitempty"`
+	ResetsAt     int64                `json:"resetsAt"`
+	Windows      []notificationWindow `json:"windows,omitempty"`
+}
+
+type notificationWindow struct {
+	LimitName             *string `json:"limitName"`
+	WindowDurationMinutes int     `json:"windowDurationMinutes"`
+	UsedPercent           float64 `json:"usedPercent"`
+	ResetsAt              int64   `json:"resetsAt"`
 }
 
 func (a *App) smtpSettings() SMTPSettings {
@@ -484,6 +492,20 @@ func renderTelegramCurrentUsage(ds []Dashboard, zone string, now time.Time) stri
 	}
 	return msg
 }
+
+func notificationWindows(limits []LimitBucket) []notificationWindow {
+	windows := make([]notificationWindow, 0, len(limits))
+	for _, limit := range limits {
+		windows = append(windows, notificationWindow{
+			LimitName:             limit.LimitName,
+			WindowDurationMinutes: limit.WindowDurationMinutes,
+			UsedPercent:           limit.UsedPercent,
+			ResetsAt:              limit.ResetsAt,
+		})
+	}
+	return windows
+}
+
 func num(n *int64) string {
 	if n == nil {
 		return "暂无"
@@ -503,6 +525,7 @@ func (a *App) processReminders() {
 	a.mu.RUnlock()
 	now := time.Now()
 	for _, d := range ds {
+		windows := notificationWindows(d.Limits)
 		for _, x := range d.Limits {
 			if !g.NotifyBefore || x.ResetsAt <= now.Unix() {
 				continue
@@ -512,7 +535,7 @@ func (a *App) processReminders() {
 				continue
 			}
 			key := fmt.Sprintf("%d:%s:%s:%d:before", d.AccountID, x.LimitID, x.WindowType, x.ResetsAt)
-			event := notificationEvent{Version: 1, Kind: "before", Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt}
+			event := notificationEvent{Version: 1, Kind: "before", Account: d.DisplayName, DurationMins: x.WindowDurationMinutes, Remaining: 100 - x.UsedPercent, Used: x.UsedPercent, ResetsAt: x.ResetsAt, Windows: windows}
 			body, _ := json.Marshal(event)
 			_, _ = a.store.DB.Exec(`INSERT OR IGNORE INTO notifications
 						(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
@@ -529,10 +552,11 @@ func (a *App) processReminders() {
 func (a *App) sendPendingReminders(now time.Time) {
 	type pendingReminder struct {
 		key       string
+		kind      string
 		body      string
 		accountID int64
 	}
-	rows, err := a.store.DB.Query(`SELECT n.dedupe_key,n.body,n.account_id FROM notifications n
+	rows, err := a.store.DB.Query(`SELECT n.dedupe_key,n.kind,n.body,n.account_id FROM notifications n
 		JOIN accounts a ON a.id=n.account_id
 		WHERE n.status IN ('pending','failed') AND n.scheduled_at<=? AND n.scheduled_at>=? ORDER BY n.scheduled_at`, now.Unix(), now.Add(-6*time.Hour).Unix())
 	if err != nil {
@@ -541,12 +565,28 @@ func (a *App) sendPendingReminders(now time.Time) {
 	pending := []pendingReminder{}
 	for rows.Next() {
 		var p pendingReminder
-		if rows.Scan(&p.key, &p.body, &p.accountID) == nil && p.body != "" {
+		if rows.Scan(&p.key, &p.kind, &p.body, &p.accountID) == nil && p.body != "" {
 			pending = append(pending, p)
 		}
 	}
 	_ = rows.Close()
 	for _, p := range pending {
+		if p.kind == "auto_hello" {
+			if !a.general().AutoHello {
+				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, p.key)
+				continue
+			}
+			err := a.sendAutoHello(p.accountID, p.body)
+			status := "sent"
+			var sent any = now.Unix()
+			if err != nil {
+				status = "failed"
+				sent = nil
+			}
+			_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=attempts+1,last_error=?,sent_at=? WHERE dedupe_key=?`,
+				status, errorText(err), sent, p.key)
+			continue
+		}
 		event, structured := decodeNotification(p.body)
 		if structured && ((event.Kind == "before" && event.ResetsAt <= now.Unix()) ||
 			((event.Kind == "after" || event.Kind == "detected_after") && !event.Confirmed)) {
@@ -580,6 +620,35 @@ func (a *App) sendPendingReminders(now time.Time) {
 		_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=attempts+1,last_error=?,sent_at=? WHERE dedupe_key=?`,
 			status, strings.Join(errs, "; "), sent, p.key)
 	}
+}
+
+func (a *App) sendAutoHello(accountID int64, message string) error {
+	rt := a.runtime(accountID)
+	if rt == nil {
+		return errors.New("账号不存在")
+	}
+	rt.syncing.Lock()
+	defer rt.syncing.Unlock()
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	if err := rt.ensureReady(ctx); err != nil {
+		return err
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "Hello"
+	}
+	return rt.client.SendMessage(ctx, message)
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func decodeNotification(body string) (notificationEvent, bool) {
@@ -626,13 +695,17 @@ func sortLimitsForDisplay(limits []LimitBucket) []LimitBucket {
 }
 
 func limitDisplayOrder(limit LimitBucket) int {
-	if limit.WindowDurationMinutes == 300 {
+	return windowDisplayOrder(limit.LimitName, limit.WindowDurationMinutes)
+}
+
+func windowDisplayOrder(name *string, durationMinutes int) int {
+	if durationMinutes == 300 {
 		return 0
 	}
-	if limit.WindowDurationMinutes != 10080 {
+	if durationMinutes != 10080 {
 		return 3
 	}
-	if limit.LimitName != nil && strings.EqualFold(strings.TrimSpace(*limit.LimitName), "gpt-reserve") {
+	if name != nil && strings.EqualFold(strings.TrimSpace(*name), "gpt-reserve") {
 		return 2
 	}
 	return 1
@@ -696,6 +769,17 @@ func renderNotification(event notificationEvent, legacy, zone string, now time.T
 	label := limitLabel(event.DurationMins)
 	plain := fmt.Sprintf("%s\n\n账号：%s\n额度：%s\n%s\n下次重置：%s\n%s\n时区：%s", title, event.Account, label, detail, when, relative, zone)
 	tg := fmt.Sprintf("%s <b>%s</b>\n\n<b>%s</b>\n%s：<b>%s</b>\n\n下次重置\n<b>%s</b>\n%s", icon, title, html.EscapeString(event.Account), label, detail, when, relative)
+	if len(event.Windows) > 0 {
+		windows := append([]notificationWindow(nil), event.Windows...)
+		sort.SliceStable(windows, func(i, j int) bool {
+			return windowDisplayOrder(windows[i].LimitName, windows[i].WindowDurationMinutes) < windowDisplayOrder(windows[j].LimitName, windows[j].WindowDurationMinutes)
+		})
+		tg = fmt.Sprintf("%s <b>%s</b>\n\n<b>%s</b>\n", icon, title, html.EscapeString(event.Account))
+		for _, window := range windows {
+			windowLabel := html.EscapeString(limitWindowLabel(window.LimitName, window.WindowDurationMinutes))
+			tg += fmt.Sprintf("• %s：<b>剩余 %.1f%%</b>\n  重置：%s（%s）\n", windowLabel, 100-window.UsedPercent, formatTime(window.ResetsAt, zone), relativeTime(window.ResetsAt, now))
+		}
+	}
 	content := fmt.Sprintf("<div style=\"font-size:14px;color:#64748b;margin-bottom:8px\">%s · %s</div><div style=\"font-size:24px;font-weight:700;color:#0f172a\">%s</div>", html.EscapeString(event.Account), label, detail)
 	return plain, tg, title, emailCard(title, content, when+" · "+relative, zone, color)
 }

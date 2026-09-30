@@ -97,12 +97,14 @@
 `GET /api/v1/settings/general` 返回：
 
 ```text
-{timezone,theme,syncMinutes,retentionDays,beforeMinutes,notifyBefore,notifyAfter}
+{timezone,theme,syncMinutes,retentionDays,beforeMinutes,notifyBefore,notifyAfter,autoHello}
 ```
 
 任意非 `GET` 方法都按更新处理，前端使用 `PUT`；请求接受完整对象。`syncMinutes` 为 1–60，`retentionDays` 为 30–365，`beforeMinutes` 为 1–1440，时区必须能由 Go 加载；非法值返回 400。成功返回保存后的对象。
 
 `syncMinutes` 同时控制限额、累计 Token、单日峰值、最长任务时长和每日 Token 桶的后台读取频率，默认值为 5。手动账号同步不受该间隔限制。该设置不保证上游账号级摘要或日桶在每次读取时都会变化。
+
+`autoHello` 默认为 `false`。启用后，每个账号的 5 小时窗口在未使用且下一次重置时间约为 5 小时时，会通过该账号的 Codex app-server 发送一次 `Hello`；同一 `resetsAt` 只发送一次，失败任务在六小时内重试。
 
 ### SMTP
 
@@ -128,4 +130,4 @@
 
 ## 7. 外部协议边界
 
-每个账号通过 JSONL stdio 与 `codex app-server` 通信。当前使用的方法为 `initialize`、`account/read`、`account/login/start`、`account/logout`、`account/rateLimits/read` 和 `account/usage/read`，并响应 `account/login/completed`、`account/updated`、`account/rateLimits/updated` 通知。官方协议说明见 [Codex App Server](https://learn.chatgpt.com/docs/app-server)；本项目以 Dockerfile 固定的 Codex CLI 版本、当前解析代码和测试作为兼容基线。
+每个账号通过 JSONL stdio 与 `codex app-server` 通信。当前使用的方法为 `initialize`、`account/read`、`account/login/start`、`account/logout`、`account/rateLimits/read`、`account/usage/read`、`model/list`、`thread/start` 和 `turn/start`，并响应 `account/login/completed`、`account/updated`、`account/rateLimits/updated` 通知。自动 Hello 使用独立只读 turn，并优先选择低成本模型和最低可用 effort。官方协议说明见 [Codex App Server](https://learn.chatgpt.com/docs/app-server)；本项目以 Dockerfile 固定的 Codex CLI 版本、当前解析代码和测试作为兼容基线。

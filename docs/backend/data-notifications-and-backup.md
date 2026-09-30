@@ -23,12 +23,14 @@
 
 限额快照按 `(account_id, limit_id, window_type)` 比较。重置前提醒的 key 包含旧周期的 `resets_at` 和 `before`。重置后确认不再仅凭本地时钟到点生成：正常重置必须在旧重置时间后的六小时内看到上游 `resets_at` 推进到未来的新周期，再以旧周期时间生成 `after` key；异常提前重置以六小时内旧快照的 ID 生成 `detected_after` key，且百分比回落必须超过 `0.01`。过期的重置前提醒和无法证明已确认的旧版重置后记录不会发送。
 
-确认事件保存新快照中的剩余比例和下一次重置时间。同步先提交 staged 快照和通知，成功保存账号并发布内存 Dashboard 后，按账号恢复六小时窗口内的全部 staged 记录；因此进程在两步之间崩溃时，下次成功同步仍会继续发送且不会重复。过期 staged 记录标记为 expired。管理端、公开页、Telegram 查询、自动 Telegram 提醒和 SMTP 邮件共享同一份已确认数据。
+确认事件保存新快照中的剩余比例、下一次重置时间以及该账号的完整限额窗口快照。同步先提交 staged 快照和通知，成功保存账号并发布内存 Dashboard 后，按账号恢复六小时窗口内的全部 staged 记录；因此进程在两步之间崩溃时，下次成功同步仍会继续发送且不会重复。过期 staged 记录标记为 expired。管理端、公开页、Telegram 查询、自动 Telegram 提醒和 SMTP 邮件共享同一份已确认数据。
 
 处理器每分钟为当前 Dashboard 生成到期提醒，并只发送 `scheduled_at` 后六小时内的未发送记录。Telegram 与 SMTP 中任何启用渠道失败都会把记录标记为 failed，后续周期在窗口内重试；全部启用渠道成功才标记 sent。稳定 key 和 `INSERT OR IGNORE` 是防重复边界。
 
+通用设置启用 `autoHello` 后，限额快照会为每个账号符合以下条件的 5 小时窗口创建 `auto_hello` staged 任务：窗口为 300 分钟、`usedPercent` 为零，且 `resetsAt` 与抓取时间相差 5 小时 ±5 分钟。任务 key 包含账号、限额、窗口类型和 `resetsAt`，同一周期最多发送一次。账号同步成功发布 Dashboard 后任务才进入 pending；发送通过该账号的 app-server 独立低 effort turn 完成，失败任务沿用六小时重试窗口。
+
 ## Telegram 与 SMTP
 
-Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。Telegram transport 错误在进入 API、通知记录或日志前会去除含 Token 的 URL；启动迁移也会清理旧通知错误中的 Telegram URL。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。“当前用量”“立即刷新”和“重置时间”按与网页端相同的额度名称和稳定顺序显示窗口，以区分普通 7 天窗口与 `gpt-reserve` 7 天窗口。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
+Telegram 保存加密 Token、Chat ID 和 Bot 信息。保存 Token 前调用 `getMe`；long polling timeout 为 25 秒，HTTP client timeout 为 35 秒。Telegram transport 错误在进入 API、通知记录或日志前会去除含 Token 的 URL；启动迁移也会清理旧通知错误中的 Telegram URL。六位绑定码十分钟有效且一次成功后清除。存在绑定 Chat ID 时自动启用额度提醒和查询菜单；启动时如发现旧版本已绑定但关闭了菜单，会主动发送带键盘的启用通知，成功后写回新状态。每条 update 在处理前重新核对当前 Token 和 Chat ID。更换 Token 或删除配置会重置 update offset。“当前用量”“立即刷新”和“重置时间”按与网页端相同的额度名称和稳定顺序显示窗口，以区分普通 7 天窗口与 `gpt-reserve` 7 天窗口。自动重置提醒也按该顺序显示触发账号在事件生成时的全部限额窗口、剩余比例和重置时间；失败重试复用已保存的窗口快照，只重新计算相对时间。旧版未保存完整窗口的待发送记录继续回退为单窗口文案，SMTP 邮件也保持单窗口内容。解除绑定原子删除 Token、Chat ID、Bot 信息、兼容开关值和绑定码；随后清理 Telegram 键盘失败不会恢复本地秘密。
 
 SMTP 支持 `starttls`、隐式 `tls` 和 `none`，TLS 最低 1.2；支持可选 PLAIN AUTH，发送 multipart text/html。TCP 连接和后续 SMTP/TLS 读写共享 35 秒 deadline。修改外部调用时必须保留这一超时边界、TLS server name、HTML 转义和不记录秘密的错误处理。

@@ -1489,6 +1489,14 @@ function General() {
           />
           重置后确认
         </label>
+        <label className="checks">
+          <input
+            type="checkbox"
+            checked={v.autoHello}
+            onChange={(e) => setV({ ...v, autoHello: e.target.checked })}
+          />
+          5 小时窗口未使用时自动发送 Hello
+        </label>
       </div>
       <button>保存设置</button>
       {msg && (

@@ -28,6 +28,8 @@ account/login/start {type:"chatgptDeviceCode"}
 - 用量读取更新 summary，并把合法的每日 Token bucket 按账号合并到 `daily_usage`；同日后续值覆盖旧值。Dashboard 从保留期内最早保存的官方日桶连续生成到配置时区的今天，缺失日期补为零。接口失败且登录邮箱未变化时保留上一份内存 summary，并从 SQLite 恢复历史；退出登录、身份未知或邮箱变化时清除该精确槽位可从官方源恢复的日用量缓存，不沿用旧 summary，且用量失败不令整次同步失败。
 - 每次限额同步写入快照，结合已到期窗口的 `resets_at` 推进或提前发生的用量百分比显著回落确认重置，并更新账号元数据及内存 Dashboard。只有新快照确认后才生成重置后提醒；通知使用新周期的剩余比例和下一次重置时间。
 
+启用 `autoHello` 时，限额同步还会识别未使用的 5 小时窗口并排队一次 `Hello`。发送器使用 `model/list` 优先选择低成本模型和最低可用 effort，再通过 `thread/start` 与 `turn/start` 创建只读独立 turn；模型不可用时回退到 app-server 默认模型。
+
 `account/rateLimits/read` 的 `individualLimit`、`account/usage/read` 的 optional 指标和 daily buckets 都可能暂未提供。能力按响应字段检测，不根据 Codex 版本或套餐猜测。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
 
 后台按 `syncMinutes`（默认 5 分钟）重复执行同一条用量读取链路，详情页每轮请求完成 30 秒后重读 Dashboard。同步间隔只影响发现上游变化的时间；`account/usage/read` 没有强制上游重新统计的参数，因此不得把补齐的零值解释为独立测得的实时用量。
