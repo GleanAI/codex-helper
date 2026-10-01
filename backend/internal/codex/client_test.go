@@ -116,6 +116,35 @@ func (w *scriptedWriteCloser) Write(p []byte) (int, error) {
 
 func (w *scriptedWriteCloser) Close() error { return nil }
 
+type blockedTurnStartWriteCloser struct {
+	*scriptedWriteCloser
+	started   chan struct{}
+	release   chan struct{}
+	closeOnce sync.Once
+}
+
+func (w *blockedTurnStartWriteCloser) Write(p []byte) (int, error) {
+	var request struct {
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(p, &request); err != nil {
+		return 0, err
+	}
+	n, err := w.scriptedWriteCloser.Write(p)
+	if err == nil && request.Method == "turn/start" {
+		// The response is queued, but send cannot finish until Close releases
+		// this write. Cancellation must therefore recycle the connection.
+		close(w.started)
+		<-w.release
+	}
+	return n, err
+}
+
+func (w *blockedTurnStartWriteCloser) Close() error {
+	w.closeOnce.Do(func() { close(w.release) })
+	return w.scriptedWriteCloser.Close()
+}
+
 func (w *blockedWriteCloser) Write([]byte) (int, error) {
 	w.startedOnce.Do(func() { close(w.started) })
 	<-w.release
@@ -321,12 +350,66 @@ func TestSendMessageCancellationCleansTurnWaiter(t *testing.T) {
 	c.cmd = &exec.Cmd{}
 	c.in = writer
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = c.Close()
+		close(release)
+	})
 	done := make(chan error, 1)
 	go func() { done <- c.SendMessage(ctx, "Hello") }()
 	<-started
 	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
+	err := <-done
+	assertCanceledMessageCleaned(t, c, writer.requests, err)
+}
+
+func TestSendMessageCancellationDuringTurnStartWriteCleansWaiters(t *testing.T) {
+	c := New(t.TempDir(), nil)
+	releaseCompletion := make(chan struct{})
+	writer := &blockedTurnStartWriteCloser{
+		scriptedWriteCloser: &scriptedWriteCloser{client: c, turnRelease: releaseCompletion},
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+	}
+	c.connected = true
+	c.cmd = &exec.Cmd{}
+	c.in = writer
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		_ = c.Close()
+		close(releaseCompletion)
+	})
+	done := make(chan error, 1)
+	go func() { done <- c.SendMessage(ctx, "Hello") }()
+	select {
+	case <-writer.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn/start write did not start")
+	}
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SendMessage did not return after cancellation during turn/start write")
+	}
+	if len(writer.requests) != 3 {
+		t.Fatalf("requests = %#v; want only model/list, thread/start and turn/start", writer.requests)
+	}
+	assertCanceledMessageCleaned(t, c, writer.requests, err)
+}
+
+func assertCanceledMessageCleaned(t *testing.T, c *Client, requests []map[string]any, err error) {
+	t.Helper()
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("SendMessage error = %v; want context canceled", err)
+	}
+	c.mu.Lock()
+	pending := len(c.pending)
+	c.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending calls = %d; want 0", pending)
 	}
 	c.turnMu.Lock()
 	remaining := len(c.turns)
@@ -334,19 +417,30 @@ func TestSendMessageCancellationCleansTurnWaiter(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("turn waiters = %d; want 0", remaining)
 	}
-	switch len(writer.requests) {
+	switch len(requests) {
+	case 3:
+		if c.Connected() {
+			t.Fatal("client remained connected after cancellation during turn/start write")
+		}
+		if !IsTurnOutcomeUnknown(err) {
+			t.Fatalf("SendMessage error = %v; want unknown turn/start outcome", err)
+		}
 	case 4:
-		if writer.requests[3]["method"] != "thread/unsubscribe" {
-			t.Fatalf("requests = %#v; want cleanup after unknown turn/start outcome", writer.requests)
+		if requests[3]["method"] != "thread/unsubscribe" {
+			t.Fatalf("requests = %#v; want cleanup after unknown turn/start outcome", requests)
 		}
 	case 5:
-		if writer.requests[3]["method"] != "turn/interrupt" || writer.requests[4]["method"] != "thread/unsubscribe" {
-			t.Fatalf("requests = %#v; want turn/interrupt followed by cleanup", writer.requests)
+		if requests[3]["method"] != "turn/interrupt" || requests[4]["method"] != "thread/unsubscribe" {
+			t.Fatalf("requests = %#v; want turn/interrupt followed by cleanup", requests)
 		}
 	default:
-		t.Fatalf("requests = %#v; want cancellation before or after turn/start response consumption", writer.requests)
+		t.Fatalf("requests = %#v; want cancellation during turn/start write or before or after response consumption", requests)
 	}
-	close(release)
+	for i, method := range []string{"model/list", "thread/start", "turn/start"} {
+		if requests[i]["method"] != method {
+			t.Fatalf("request %d = %#v; want %s", i, requests[i], method)
+		}
+	}
 }
 
 func TestInterruptTurnUsesAcceptedTurnID(t *testing.T) {

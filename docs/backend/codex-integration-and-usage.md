@@ -30,6 +30,8 @@ account/login/start {type:"chatgptDeviceCode"}
 
 启用 `autoHello` 时，限额同步还会识别未使用的 5 小时窗口并按真实窗口周期排队一次 `Hello`。阶段标记独立持久化；明确观测到非零用量，或成功 Hello 启动的活动窗口结束且上游返回新的未使用窗口后，才会开启下一轮。因此轻量请求即使用量百分比仍为零，也能在真实重置后再次触发；optional 元数据短暂缺失、上游未启动窗口的 `resetsAt` 滑动、仅本地时间经过五小时或历史清理均不会重复排队。窗口识别规则见[数据、通知与备份](data-notifications-and-backup.md)。发送器使用 `model/list` 优先选择低成本模型和最低可用 effort，再通过 `thread/start` 与 `turn/start` 创建只读 ephemeral turn；模型不可用时回退到 app-server 默认模型，并等待 `turn/completed` 的最终状态确认真实成功。等待超时时会用独立短 context 调用 `turn/interrupt` 并继续等待终态；若仍无法确认原 turn 是否完成，则不自动重发同一阶段。获得 thread ID 后的所有结束路径都会调用 `thread/unsubscribe`；清理失败时关闭该账号的 app-server，让后续 `ensureReady` 创建干净进程，已确认成功的任务不会在同一轮重发。
 
+若在 `turn/start` 写入尚未返回时取消请求，客户端会关闭连接并回收进程，以解除可能阻塞的写入，同时清除 pending 请求和 turn waiter。此时后续 `thread/unsubscribe` 调用无法写出，资源通过进程回收释放；原 turn 的结果仍标记为未知，不自动重发。
+
 `account/rateLimits/read` 的 `individualLimit`、`account/usage/read` 的 optional 指标和 daily buckets 都可能暂未提供。能力按响应字段检测，不根据 Codex 版本或套餐猜测。仅 API Key 或 Bedrock 登录不能保证读取 ChatGPT 用量；不得在缺失数据时合成调用次数、输入/输出 Token、价格或账单日期。
 
 后台按 `syncMinutes`（默认 5 分钟）重复执行同一条用量读取链路，详情页每轮请求完成 30 秒后重读 Dashboard。同步间隔只影响发现上游变化的时间；`account/usage/read` 没有强制上游重新统计的参数，因此不得把补齐的零值解释为独立测得的实时用量。
