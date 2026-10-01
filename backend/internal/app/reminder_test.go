@@ -486,6 +486,188 @@ func TestStoreLimitSnapshotsQueuesAutoHelloForNextUnusedEpisode(t *testing.T) {
 	}
 }
 
+func TestAutoHelloRearmsAfterConfirmedResetWithZeroPercent(t *testing.T) {
+	for _, cleanup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup=%v", cleanup), func(t *testing.T) {
+			a := newReminderTestApp(t)
+			g := defaults()
+			g.AutoHello = true
+			if err := a.store.SetJSON("general", g); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().Unix()
+			activeReset := now + 18_004
+			initial := reminderDashboard(now, 0, now+18_000)
+			if _, err := a.storeLimitSnapshots(initial); err != nil {
+				t.Fatal(err)
+			}
+			client := &fakeCodexClient{}
+			a.runtimes[1] = &accountRuntime{client: client, dash: initial}
+			if _, err := a.store.PromoteStagedNotifications(1, now); err != nil {
+				t.Fatal(err)
+			}
+			a.sendPendingReminders(time.Unix(now, 0))
+			var completed int64
+			if err := a.store.DB.QueryRow("SELECT completed_at FROM auto_hello_state WHERE account_id=1").Scan(&completed); err != nil || completed < now {
+				t.Fatalf("successful turn did not persist completion: %d, %v", completed, err)
+			}
+			// The light turn starts a real countdown but usage remains rounded to zero.
+			for _, fetched := range []int64{now + 3, now + 600, activeReset - 4} {
+				if _, err := a.storeLimitSnapshots(reminderDashboard(fetched, 0, activeReset)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if cleanup {
+				if _, err := a.store.DB.Exec("DELETE FROM notifications; DELETE FROM limit_snapshots"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Missing metadata at the reset must not discard the durable countdown.
+			unknown := reminderDashboard(activeReset+1, 0, 0)
+			unknown.Limits[0].WindowDurationMinutes = 0
+			if _, err := a.storeLimitSnapshots(unknown); err != nil {
+				t.Fatal(err)
+			}
+			for i := int64(0); i < 3; i++ {
+				fetched := activeReset + 300 + i*300
+				if _, err := a.storeLimitSnapshots(reminderDashboard(fetched, 0, fetched+18_000)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var count int
+			if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello' AND status='staged'").Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("new-cycle staged tasks = %d; want 1", count)
+			}
+		})
+	}
+}
+
+func TestAutoHelloDoesNotRearmWithoutConfirmedActivity(t *testing.T) {
+	for _, outcome := range []string{"sent", "failed", "expired"} {
+		t.Run(outcome, func(t *testing.T) {
+			a := newReminderTestApp(t)
+			g := defaults()
+			g.AutoHello = true
+			if err := a.store.SetJSON("general", g); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().Unix()
+			if _, err := a.storeLimitSnapshots(reminderDashboard(now, 0, now+18_000)); err != nil {
+				t.Fatal(err)
+			}
+			var completed *int64
+			if outcome == "sent" {
+				completed = &now
+			}
+			if err := a.store.RecordAutoHelloResult(fmt.Sprintf("1:codex:primary:%d:hello", now+18_000),
+				1, "codex", "primary", now, outcome, 1, "", completed); err != nil {
+				t.Fatal(err)
+			}
+			if outcome != "sent" {
+				// A countdown cannot establish success for an unconfirmed turn.
+				if _, err := a.storeLimitSnapshots(reminderDashboard(now+600, 0, now+18_000)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := int64(1); i <= 120; i++ {
+				fetched := now + i*600
+				if _, err := a.storeLimitSnapshots(reminderDashboard(fetched, 0, fetched+18_000)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var count int
+			if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello'").Scan(&count); err != nil || count != 1 {
+				t.Fatalf("unconfirmed activity requeued: count=%d err=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestAutoHelloRetainsResetWhileDisabled(t *testing.T) {
+	a := newReminderTestApp(t)
+	g := defaults()
+	g.AutoHello = false
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.store.DB.Exec(`INSERT INTO auto_hello_state(account_id,limit_id,window_type,started_at,completed_at,active_resets_at)
+		VALUES(1,'codex','primary',1000,1003,19004);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at,body,account_id)
+		VALUES('1:codex:primary:19000:hello','codex','auto_hello','sent',1000,1003,'Hello',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(19304, 0, 37304)); err != nil {
+		t.Fatal(err)
+	}
+	g.AutoHello = true
+	if err := a.store.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.storeLimitSnapshots(reminderDashboard(19604, 0, 37604)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := a.store.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello' AND status='staged'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("reenabling lost reset boundary: count=%d err=%v", count, err)
+	}
+}
+
+func TestAutoHelloUpgradeRearmsOnFirstSync(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Actual incident: the turn completed at 03:45 UTC, reset at 08:45:13 UTC,
+	// and the next sync saw an idle window at 08:50 while percentage stayed zero.
+	start := time.Date(2026, 10, 1, 3, 45, 9, 0, time.UTC).Unix()
+	if _, err = s.DB.Exec(`DROP TABLE auto_hello_state;
+		CREATE TABLE auto_hello_state(account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		limit_id TEXT NOT NULL,window_type TEXT NOT NULL,started_at INTEGER NOT NULL,
+		PRIMARY KEY(account_id,limit_id,window_type));
+		INSERT INTO auto_hello_state VALUES(1,'codex','primary',?)`, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(`INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at,body,account_id)
+		VALUES(?,'codex','auto_hello','sent',?,?,'Hello',1)`, fmt.Sprintf("1:codex:primary:%d:hello", start+18_000), start, start+1); err != nil {
+		t.Fatal(err)
+	}
+	for _, fetched := range []int64{start + 3, start + 600, start + 18_300} {
+		reset := start + 18_004
+		if fetched > reset {
+			reset = fetched + 18_000
+		}
+		if _, err = s.DB.Exec(`INSERT INTO limit_snapshots(account_id,limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at)
+			VALUES(1,'codex','primary',0,300,?,?)`, reset, fetched); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	g := defaults()
+	g.AutoHello = true
+	if err = s.SetJSON("general", g); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{store: s}
+	if _, err = a.storeLimitSnapshots(reminderDashboard(start+40_000, 0, start+58_000)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE kind='auto_hello' AND status='staged'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("upgrade did not recover incident: count=%d err=%v", count, err)
+	}
+}
+
 func TestStoreLimitSnapshotsDoesNotRequeueExpiredAutoHelloWhenStillUnused(t *testing.T) {
 	a := newReminderTestApp(t)
 	g := defaults()

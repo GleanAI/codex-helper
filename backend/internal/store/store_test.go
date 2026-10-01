@@ -143,6 +143,93 @@ func TestExistingAutoHelloNotificationsSeedOnlyCurrentEpisodeState(t *testing.T)
 	}
 }
 
+func TestAutoHelloUpgradeRecoversCountdownAndDoesNotReseedOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the exact previous schema; all migration work must preserve rows.
+	if _, err = s.DB.Exec(`DROP TABLE auto_hello_state;
+		CREATE TABLE auto_hello_state (
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		limit_id TEXT NOT NULL, window_type TEXT NOT NULL, started_at INTEGER NOT NULL,
+		PRIMARY KEY(account_id,limit_id,window_type));
+		INSERT INTO auto_hello_state VALUES(1,'codex','primary',1000);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,sent_at,body,account_id)
+		VALUES('1:codex:primary:19000:hello','codex','auto_hello','sent',1000,1003,'Hello',1),
+		('1:other:primary:19000:hello','codex','auto_hello','expired',1000,NULL,'Hello',1);
+		INSERT INTO limit_snapshots(account_id,limit_id,window_type,used_percent,duration_mins,resets_at,fetched_at)
+		VALUES(1,'codex','primary',0,300,19004,1003),
+		(1,'codex','primary',0,300,19004,1600),
+		(1,'codex','primary',0,0,99999,19005),
+		(1,'codex','primary',0,300,37304,19304),
+		(1,'other','primary',0,300,19004,1600);`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed, reset int64
+	if err = s.DB.QueryRow(`SELECT completed_at,active_resets_at FROM auto_hello_state
+		WHERE account_id=1 AND limit_id='codex'`).Scan(&completed, &reset); err != nil || completed != 1003 || reset != 19004 {
+		t.Fatalf("recovered completed=%d reset=%d err=%v; want 1003/19004", completed, reset, err)
+	}
+	var unknown int
+	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM auto_hello_state WHERE limit_id='other'
+		AND completed_at IS NULL AND active_resets_at IS NULL`).Scan(&unknown); err != nil || unknown != 1 {
+		t.Fatalf("unconfirmed turn gained activity: count=%d err=%v", unknown, err)
+	}
+	if _, err = s.DB.Exec(`UPDATE auto_hello_state SET started_at=19304,completed_at=NULL,active_resets_at=NULL
+		WHERE limit_id='codex'; DELETE FROM auto_hello_state WHERE limit_id='other'; DELETE FROM limit_snapshots`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	var started int64
+	if err = s.DB.QueryRow(`SELECT started_at FROM auto_hello_state WHERE limit_id='codex'
+		AND completed_at IS NULL AND active_resets_at IS NULL`).Scan(&started); err != nil || started != 19304 {
+		t.Fatalf("restart changed episode: started=%d err=%v", started, err)
+	}
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM auto_hello_state WHERE limit_id='other'").Scan(&unknown); err != nil || unknown != 0 {
+		t.Fatalf("restart resurrected old task: count=%d err=%v", unknown, err)
+	}
+}
+
+func TestRecordAutoHelloResultRollsBackWhenEpisodeUpdateFails(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	if _, err = s.DB.Exec(`INSERT INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+		VALUES(1,'codex','primary',1000);
+		INSERT INTO notifications(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+		VALUES('1:codex:primary:19000:hello','codex','auto_hello','pending',1000,'Hello',1);
+		CREATE TRIGGER fail_episode BEFORE UPDATE ON auto_hello_state
+		BEGIN SELECT RAISE(ABORT,'test episode failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+	completed := int64(1003)
+	if err = s.RecordAutoHelloResult("1:codex:primary:19000:hello", 1, "codex", "primary", 1000, "sent", 1, "", &completed); err == nil {
+		t.Fatal("expected failed transaction")
+	}
+	var status string
+	if err = s.DB.QueryRow("SELECT status FROM notifications").Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("delivery was partially committed: status=%q err=%v", status, err)
+	}
+}
+
 func TestDailyUsageUpsertAndRange(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

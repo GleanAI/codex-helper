@@ -892,11 +892,9 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 			return nil, snapshotErr
 		}
 		age := d.FetchedAt - previousFetchedAt
-		if x.UsedPercent > 0 {
-			if _, err = tx.Exec(`DELETE FROM auto_hello_state
-				WHERE account_id=? AND limit_id=? AND window_type=?`, d.AccountID, x.LimitID, x.WindowType); err != nil {
-				return nil, err
-			}
+		resetBoundary, stateErr := advanceAutoHelloWindow(tx, d.AccountID, x, d.FetchedAt, g.AutoHello)
+		if stateErr != nil {
+			return nil, stateErr
 		}
 		if g.AutoHello && qualifiesForAutoHello(x, d.FetchedAt) {
 			var marker int
@@ -909,6 +907,9 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 				episodeStart, boundaryErr := lastAutoHelloUse(tx, d.AccountID, x.LimitID, x.WindowType, d.FetchedAt)
 				if boundaryErr != nil {
 					return nil, boundaryErr
+				}
+				if resetBoundary > episodeStart {
+					episodeStart = resetBoundary
 				}
 				exists, existsErr := autoHelloTaskExists(tx, d.AccountID, x.LimitID, x.WindowType, episodeStart)
 				if existsErr != nil {
@@ -960,6 +961,42 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 		return nil, err
 	}
 	return resetNotifications, nil
+}
+
+// Advance only from observed upstream activity, never from a sliding idle
+// reset timestamp or elapsed local time alone.
+func advanceAutoHelloWindow(tx *sql.Tx, accountID int64, limit LimitBucket, fetchedAt int64, enabled bool) (int64, error) {
+	if limit.UsedPercent > 0 {
+		_, err := tx.Exec(`DELETE FROM auto_hello_state WHERE account_id=? AND limit_id=? AND window_type=?`,
+			accountID, limit.LimitID, limit.WindowType)
+		return 0, err
+	}
+	var completedAt, activeReset sql.NullInt64
+	err := tx.QueryRow(`SELECT completed_at,active_resets_at FROM auto_hello_state
+		WHERE account_id=? AND limit_id=? AND window_type=?`, accountID, limit.LimitID, limit.WindowType).Scan(&completedAt, &activeReset)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !completedAt.Valid || fetchedAt < completedAt.Int64 || limit.WindowDurationMinutes != autoHelloWindowMinutes {
+		return 0, nil
+	}
+	if activeReset.Valid && fetchedAt >= activeReset.Int64 && limit.ResetsAt > activeReset.Int64 && qualifiesForAutoHello(limit, fetchedAt) {
+		if !enabled {
+			return 0, nil
+		}
+		_, err = tx.Exec(`DELETE FROM auto_hello_state WHERE account_id=? AND limit_id=? AND window_type=?`,
+			accountID, limit.LimitID, limit.WindowType)
+		return activeReset.Int64, err
+	}
+	delta := limit.ResetsAt - fetchedAt
+	if delta > 0 && delta < int64((5*time.Hour-autoHelloTolerance).Seconds()) {
+		_, err = tx.Exec(`UPDATE auto_hello_state SET active_resets_at=?
+			WHERE account_id=? AND limit_id=? AND window_type=?`, limit.ResetsAt, accountID, limit.LimitID, limit.WindowType)
+	}
+	return 0, err
 }
 
 func lastAutoHelloUse(tx *sql.Tx, accountID int64, limitID, windowType string, before int64) (int64, error) {

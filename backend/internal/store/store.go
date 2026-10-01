@@ -69,7 +69,12 @@ INSERT OR IGNORE INTO telegram_updates(id,offset) VALUES(1,0);
 }
 
 func (s *Store) migrateAutoHelloState() error {
-	if _, err := s.DB.Exec(`CREATE TABLE IF NOT EXISTS auto_hello_state (
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS auto_hello_state (
 		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
 		limit_id TEXT NOT NULL,
 		window_type TEXT NOT NULL,
@@ -78,14 +83,34 @@ func (s *Store) migrateAutoHelloState() error {
 	)`); err != nil {
 		return err
 	}
+	upgrading := false
+	for _, column := range []string{"completed_at", "active_resets_at"} {
+		var exists int
+		if err = tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('auto_hello_state') WHERE name=?", column).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			upgrading = true
+			if _, err = tx.Exec("ALTER TABLE auto_hello_state ADD COLUMN " + column + " INTEGER"); err != nil {
+				return err
+			}
+		}
+	}
+	// Seed legacy episodes only on upgrade. Replaying old tasks on every boot
+	// could resurrect a marker from a window which has already finished.
+	if !upgrading {
+		return tx.Commit()
+	}
 	type legacyTask struct {
 		accountID  int64
 		limitID    string
 		windowType string
 		scheduled  int64
+		completed  sql.NullInt64
 	}
-	rows, err := s.DB.Query(`SELECT account_id,dedupe_key,scheduled_at FROM notifications
-		WHERE kind='auto_hello' AND account_id IS NOT NULL`)
+	rows, err := tx.Query(`SELECT account_id,dedupe_key,scheduled_at,
+		CASE WHEN status='sent' THEN sent_at END FROM notifications
+		WHERE kind='auto_hello' AND account_id IS NOT NULL ORDER BY scheduled_at DESC,dedupe_key DESC`)
 	if err != nil {
 		return err
 	}
@@ -93,21 +118,26 @@ func (s *Store) migrateAutoHelloState() error {
 	for rows.Next() {
 		var accountID, scheduled int64
 		var key string
-		if err = rows.Scan(&accountID, &key, &scheduled); err != nil {
+		var completed sql.NullInt64
+		if err = rows.Scan(&accountID, &key, &scheduled, &completed); err != nil {
 			rows.Close()
 			return err
 		}
 		limitID, windowType, ok := autoHelloNotificationIdentity(key, accountID)
 		if ok {
-			tasks = append(tasks, legacyTask{accountID: accountID, limitID: limitID, windowType: windowType, scheduled: scheduled})
+			tasks = append(tasks, legacyTask{accountID: accountID, limitID: limitID, windowType: windowType, scheduled: scheduled, completed: completed})
 		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	if err = rows.Close(); err != nil {
 		return err
 	}
 	for _, task := range tasks {
 		var lastUse sql.NullInt64
-		if err = s.DB.QueryRow(`SELECT MAX(fetched_at) FROM limit_snapshots
+		if err = tx.QueryRow(`SELECT MAX(fetched_at) FROM limit_snapshots
 			WHERE account_id=? AND limit_id=? AND window_type=? AND used_percent>0`,
 			task.accountID, task.limitID, task.windowType).Scan(&lastUse); err != nil {
 			return err
@@ -115,12 +145,51 @@ func (s *Store) migrateAutoHelloState() error {
 		if lastUse.Valid && lastUse.Int64 >= task.scheduled {
 			continue
 		}
-		if _, err = s.DB.Exec(`INSERT OR IGNORE INTO auto_hello_state(account_id,limit_id,window_type,started_at)
+		if _, err = tx.Exec(`INSERT OR IGNORE INTO auto_hello_state(account_id,limit_id,window_type,started_at)
 			VALUES(?,?,?,?)`, task.accountID, task.limitID, task.windowType, task.scheduled); err != nil {
 			return err
 		}
+		if task.completed.Valid {
+			if _, err = tx.Exec(`UPDATE auto_hello_state SET completed_at=COALESCE(completed_at,?)
+				WHERE account_id=? AND limit_id=? AND window_type=? AND started_at<=?`,
+				task.completed.Int64, task.accountID, task.limitID, task.windowType, task.scheduled); err != nil {
+				return err
+			}
+		}
 	}
-	return nil
+	// A countdown below the unused-window tolerance proves the window started,
+	// even when a light turn leaves the reported percentage at zero.
+	if _, err = tx.Exec(`UPDATE auto_hello_state SET active_resets_at=(
+		SELECT MAX(resets_at) FROM limit_snapshots l
+		WHERE l.account_id=auto_hello_state.account_id AND l.limit_id=auto_hello_state.limit_id
+		AND l.window_type=auto_hello_state.window_type AND l.duration_mins=300
+		AND l.fetched_at>=auto_hello_state.completed_at
+		AND l.resets_at-l.fetched_at>0 AND l.resets_at-l.fetched_at<17700
+	) WHERE completed_at IS NOT NULL`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RecordAutoHelloResult commits delivery and episode completion together.
+func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, windowType string, scheduledAt int64, status string, attempts int, lastError string, completedAt *int64) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE notifications SET status=?,attempts=?,last_error=?,sent_at=? WHERE dedupe_key=?`,
+		status, attempts, lastError, completedAt, key); err != nil {
+		return err
+	}
+	if status == "sent" && completedAt != nil {
+		if _, err = tx.Exec(`UPDATE auto_hello_state SET completed_at=?
+			WHERE account_id=? AND limit_id=? AND window_type=? AND started_at<=?`,
+			*completedAt, accountID, limitID, windowType, scheduledAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func autoHelloNotificationIdentity(key string, accountID int64) (string, string, bool) {

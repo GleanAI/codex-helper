@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -640,7 +641,8 @@ func (a *App) sendPendingReminders(now time.Time) {
 				continue
 			}
 			status := "sent"
-			var sent any = now.Unix()
+			completedAt := time.Now().Unix()
+			sent := &completedAt
 			attempts := p.attempts + 1
 			if err != nil {
 				status = "failed"
@@ -649,8 +651,10 @@ func (a *App) sendPendingReminders(now time.Time) {
 					status = "expired"
 				}
 			}
-			_, _ = a.store.DB.Exec(`UPDATE notifications SET status=?,attempts=?,last_error=?,sent_at=? WHERE dedupe_key=?`,
-				status, attempts, errorText(err), sent, p.key)
+			if saveErr := a.store.RecordAutoHelloResult(p.key, p.accountID, p.autoHello.limitID, p.autoHello.windowType,
+				p.scheduledAt, status, attempts, errorText(err), sent); saveErr != nil {
+				log.Printf("save auto Hello result for account %d: %v", p.accountID, saveErr)
+			}
 			continue
 		}
 		event, structured := decodeNotification(p.body)
