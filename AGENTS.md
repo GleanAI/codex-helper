@@ -36,6 +36,26 @@ Codex Helper 是单容器部署的 Codex 账户用量仪表盘，通过 Codex ap
 - Dockerfile、Compose、持久化或运行用户改动必须验证镜像或 Compose 配置，并核对升级数据路径。
 - 代码审查只报告可复现、由当前改动引入或暴露的问题，按 P0–P3 排序；完整流程见 [`docs/reference/code-review-rules.md`](docs/reference/code-review-rules.md)。
 
+### Git commit message
+
+提交代码时，Git commit message 不要只写标题，必须使用以下格式：
+
+- 第一行写简洁的 commit 标题。
+- 标题后空一行。
+- 下面使用 2～4 个简短 bullet 描述主要修改内容。
+- 不要写得过于详细，只说明核心改动。
+- 不要添加无意义的总结或测试结果，除非测试本身是重要修改。
+
+示例：
+
+```text
+feat: add Go backend health check
+
+- Add `/health` endpoint
+- Add health check response model
+- Update related integration tests
+```
+
 ## 必须保持的约束
 
 - HTTP 业务接口保持在 `/api/v1/`；未初始化状态只开放 status、setup 和 login，初始化后额外开放脱敏的 public overview，其他接口必须经过 session 与非只读请求来源校验。
