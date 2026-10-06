@@ -10,6 +10,10 @@ type GeneralSettings struct {
 	NotifyAfter   bool   `json:"notifyAfter"`
 	AutoHello     bool   `json:"autoHello"`
 }
+type AutoHelloLog struct {
+	Status    string `json:"status"`
+	Timestamp int64  `json:"timestamp"`
+}
 type SMTPSettings struct {
 	Host       string `json:"host"`
 	Port       int    `json:"port"`

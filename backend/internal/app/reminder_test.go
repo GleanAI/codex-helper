@@ -563,7 +563,7 @@ func TestAutoHelloDoesNotRearmWithoutConfirmedActivity(t *testing.T) {
 				completed = &now
 			}
 			if err := a.store.RecordAutoHelloResult(fmt.Sprintf("1:codex:primary:%d:hello", now+18_000),
-				1, "codex", "primary", now, outcome, 1, "", completed); err != nil {
+				1, "codex", "primary", now, outcome, 1, "", completed, now); err != nil {
 				t.Fatal(err)
 			}
 			if outcome != "sent" {

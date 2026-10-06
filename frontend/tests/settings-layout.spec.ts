@@ -18,6 +18,7 @@ const responses: Record<string, unknown> = {
     notifyAfter: true,
     autoHello: false,
   },
+  "settings/auto-hello": null,
   accounts: [
     {
       id: 1,
@@ -52,7 +53,11 @@ const responses: Record<string, unknown> = {
   },
 };
 
-async function openSettings(page: Page, version = "0.3.0-beta.1") {
+async function openSettings(
+  page: Page,
+  version = "0.3.0-beta.1",
+  autoHelloLog: unknown = responses["settings/auto-hello"],
+) {
   await page.route("**/api/v1/**", async (route) => {
     const key = new URL(route.request().url()).pathname.replace("/api/v1/", "");
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -60,6 +65,10 @@ async function openSettings(page: Page, version = "0.3.0-beta.1") {
       await route.fulfill({
         json: { initialized: true, appServer: true, version },
       });
+      return;
+    }
+    if (key === "settings/auto-hello") {
+      await route.fulfill({ json: autoHelloLog });
       return;
     }
     await route.fulfill({ json: responses[key] ?? {} });
@@ -115,6 +124,17 @@ test("exposes the automatic Hello switch in general settings", async ({
   await expect(toggle).not.toBeChecked();
   await toggle.check();
   await expect(toggle).toBeChecked();
+  await expect(page.locator(".auto-hello-log")).toHaveText("暂无发送记录");
+});
+
+test("shows the latest automatic Hello result and its timestamp", async ({
+  page,
+}) => {
+  await openSettings(page, "0.3.0-beta.1", {
+    status: "success",
+    timestamp: 1_735_689_600,
+  });
+  await expect(page.locator(".auto-hello-log")).toHaveText(/发送成功 · .+/);
 });
 
 test("keeps the authenticated brand on one line with a release version", async ({

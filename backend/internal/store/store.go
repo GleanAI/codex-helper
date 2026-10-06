@@ -83,6 +83,34 @@ func (s *Store) migrateAutoHelloState() error {
 	)`); err != nil {
 		return err
 	}
+	var logsExist int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='auto_hello_logs'").Scan(&logsExist); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS auto_hello_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		status TEXT NOT NULL,
+		attempted_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("CREATE INDEX IF NOT EXISTS idx_auto_hello_logs_time ON auto_hello_logs(attempted_at,id)"); err != nil {
+		return err
+	}
+	if logsExist == 0 {
+		if _, err = tx.Exec(`INSERT INTO auto_hello_logs(account_id,status,attempted_at)
+			SELECT account_id,'success',sent_at FROM notifications
+			WHERE kind='auto_hello' AND status='sent' AND sent_at IS NOT NULL
+			ORDER BY sent_at DESC,dedupe_key DESC LIMIT 5`); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM auto_hello_logs WHERE id NOT IN (
+		SELECT id FROM auto_hello_logs ORDER BY attempted_at DESC,id DESC LIMIT 5
+	)`); err != nil {
+		return err
+	}
 	upgrading := false
 	for _, column := range []string{"completed_at", "active_resets_at"} {
 		var exists int
@@ -172,7 +200,11 @@ func (s *Store) migrateAutoHelloState() error {
 }
 
 // RecordAutoHelloResult commits delivery and episode completion together.
-func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, windowType string, scheduledAt int64, status string, attempts int, lastError string, completedAt *int64) error {
+func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, windowType string, scheduledAt int64, status string, attempts int, lastError string, completedAt *int64, attemptedAtValues ...int64) error {
+	attemptedAt := int64(0)
+	if len(attemptedAtValues) > 0 {
+		attemptedAt = attemptedAtValues[0]
+	}
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -189,7 +221,39 @@ func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, wind
 			return err
 		}
 	}
+	if attemptedAt > 0 {
+		logStatus := "failure"
+		if status == "sent" {
+			logStatus = "success"
+		}
+		if _, err = tx.Exec(`INSERT INTO auto_hello_logs(account_id,status,attempted_at) VALUES(?,?,?)`, accountID, logStatus, attemptedAt); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`DELETE FROM auto_hello_logs WHERE id NOT IN (
+			SELECT id FROM auto_hello_logs ORDER BY attempted_at DESC,id DESC LIMIT 5
+		)`); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
+}
+
+type AutoHelloLog struct {
+	Status      string
+	AttemptedAt int64
+}
+
+func (s *Store) LatestAutoHelloLog() (AutoHelloLog, bool, error) {
+	var log AutoHelloLog
+	err := s.DB.QueryRow(`SELECT status,attempted_at FROM auto_hello_logs
+		ORDER BY attempted_at DESC,id DESC LIMIT 1`).Scan(&log.Status, &log.AttemptedAt)
+	if err == sql.ErrNoRows {
+		return AutoHelloLog{}, false, nil
+	}
+	if err != nil {
+		return AutoHelloLog{}, false, err
+	}
+	return log, true, nil
 }
 
 func autoHelloNotificationIdentity(key string, accountID int64) (string, string, bool) {
@@ -709,6 +773,9 @@ func (s *Store) DeleteAutoHelloData(accountID int64) error {
 	if _, err = tx.Exec("DELETE FROM auto_hello_state WHERE account_id=?", accountID); err != nil {
 		return err
 	}
+	if _, err = tx.Exec("DELETE FROM auto_hello_logs WHERE account_id=?", accountID); err != nil {
+		return err
+	}
 	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {
 		return err
 	}
@@ -725,6 +792,9 @@ func (s *Store) DisconnectAccount(accountID int64) error {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM auto_hello_state WHERE account_id=?", accountID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM auto_hello_logs WHERE account_id=?", accountID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {

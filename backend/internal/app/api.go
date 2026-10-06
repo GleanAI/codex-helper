@@ -131,6 +131,8 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		}
 	case p == "settings/general":
 		a.generalAPI(w, r)
+	case p == "settings/auto-hello" && r.Method == http.MethodGet:
+		a.autoHelloLogAPI(w, r)
 	case p == "settings/smtp":
 		a.smtpAPI(w, r)
 	case p == "settings/smtp/test" && r.Method == "POST":
@@ -659,6 +661,22 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 		a.reminderSendMu.Unlock()
 	}
 	jsonOut(w, 200, g)
+}
+func (a *App) autoHelloLogAPI(w http.ResponseWriter, r *http.Request) {
+	log, ok, err := a.store.LatestAutoHelloLog()
+	if err != nil {
+		jsonOut(w, http.StatusInternalServerError, map[string]string{"error": "无法读取自动 Hello 日志"})
+		return
+	}
+	if !ok {
+		jsonOut(w, http.StatusOK, nil)
+		return
+	}
+	status := "failure"
+	if log.Status == "success" {
+		status = "success"
+	}
+	jsonOut(w, http.StatusOK, AutoHelloLog{Status: status, Timestamp: log.AttemptedAt})
 }
 func (a *App) deviceLogin(w http.ResponseWriter, r *http.Request, id int64) {
 	var out struct {

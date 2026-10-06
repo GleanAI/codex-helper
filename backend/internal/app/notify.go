@@ -640,6 +640,7 @@ func (a *App) sendPendingReminders(now time.Time) {
 				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='failed',last_error=?,sent_at=NULL WHERE dedupe_key=?`, errorText(err), p.key)
 				continue
 			}
+			attemptedAt := time.Now().Unix()
 			status := "sent"
 			completedAt := time.Now().Unix()
 			sent := &completedAt
@@ -652,7 +653,7 @@ func (a *App) sendPendingReminders(now time.Time) {
 				}
 			}
 			if saveErr := a.store.RecordAutoHelloResult(p.key, p.accountID, p.autoHello.limitID, p.autoHello.windowType,
-				p.scheduledAt, status, attempts, errorText(err), sent); saveErr != nil {
+				p.scheduledAt, status, attempts, errorText(err), sent, attemptedAt); saveErr != nil {
 				log.Printf("save auto Hello result for account %d: %v", p.accountID, saveErr)
 			}
 			continue

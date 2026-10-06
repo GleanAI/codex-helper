@@ -28,6 +28,39 @@ func TestSettings(t *testing.T) {
 	}
 }
 
+func TestAutoHelloLogsKeepLatestFive(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+	for i := int64(1); i <= 6; i++ {
+		key := fmt.Sprintf("1:codex:primary:%d:hello", i)
+		if _, err = s.DB.Exec(`INSERT INTO notifications
+			(dedupe_key,channel,kind,status,scheduled_at,body,account_id)
+			VALUES(?,'codex','auto_hello','pending',?,'Hello',1)`, key, i); err != nil {
+			t.Fatal(err)
+		}
+		status := "sent"
+		var completed *int64 = &i
+		if i == 6 {
+			status = "failed"
+			completed = nil
+		}
+		if err = s.RecordAutoHelloResult(key, 1, "codex", "primary", i, status, 1, "", completed, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err = s.DB.QueryRow("SELECT COUNT(*) FROM auto_hello_logs").Scan(&count); err != nil || count != 5 {
+		t.Fatalf("auto Hello log count=%d err=%v; want 5", count, err)
+	}
+	log, ok, err := s.LatestAutoHelloLog()
+	if err != nil || !ok || log.Status != "failure" || log.AttemptedAt != 6 {
+		t.Fatalf("latest auto Hello log=%#v ok=%v err=%v", log, ok, err)
+	}
+}
+
 func TestAccountsAndPerAccountUsage(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -221,7 +254,7 @@ func TestRecordAutoHelloResultRollsBackWhenEpisodeUpdateFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	completed := int64(1003)
-	if err = s.RecordAutoHelloResult("1:codex:primary:19000:hello", 1, "codex", "primary", 1000, "sent", 1, "", &completed); err == nil {
+	if err = s.RecordAutoHelloResult("1:codex:primary:19000:hello", 1, "codex", "primary", 1000, "sent", 1, "", &completed, 1003); err == nil {
 		t.Fatal("expected failed transaction")
 	}
 	var status string

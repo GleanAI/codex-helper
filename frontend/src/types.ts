@@ -117,6 +117,10 @@ export interface GeneralSettings {
   notifyAfter: boolean;
   autoHello: boolean;
 }
+export interface AutoHelloLog {
+  status: "success" | "failure";
+  timestamp: number;
+}
 export interface TelegramSettingsResponse {
   chatId: number;
   enabled: boolean;
@@ -335,6 +339,14 @@ export const decodeGeneral: Decoder<GeneralSettings> = (value) => {
     notifyBefore: boolean(x.notifyBefore, "notifyBefore"),
     notifyAfter: boolean(x.notifyAfter, "notifyAfter"),
     autoHello: x.autoHello == null ? false : boolean(x.autoHello, "autoHello"),
+  };
+};
+export const decodeAutoHelloLog: Decoder<AutoHelloLog | null> = (value) => {
+  if (value == null) return null;
+  const x = record(value, "自动 Hello 日志");
+  return {
+    status: enumValue(x.status, ["success", "failure"], "status"),
+    timestamp: number(x.timestamp, "timestamp"),
   };
 };
 export const decodeAuthProfile: Decoder<AuthProfile> = (value) => {

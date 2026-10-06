@@ -106,6 +106,8 @@
 
 `autoHello` 默认为 `false`。启用后，每个账号的 5 小时窗口在未使用且下一次重置时间约为 5 小时时，会通过该账号的 Codex app-server 发送一次 `Hello`。每轮只发送一次；明确观测到非零用量，或确认成功 Hello 启动的真实窗口结束后，才允许开启下一轮。轻量请求的 `usedPercent` 仍可能为零：成功后的完整快照在剩余时间小于 4 小时 55 分钟时记录活动窗口的 `resetsAt`，该时间到期后还必须观测到 `resetsAt` 推进且新窗口符合未使用条件，才能再次发送。可选元数据短暂缺失、未启动窗口的 `resetsAt` 滑动、历史清理或仅本地时间经过五小时均不会解除去重。任务只有在 app-server 返回 `turn/completed` 且最终状态为 `completed` 后才视为成功；已确认失败的任务从首次计划时间起按 0、5、15、30、60、120、240 分钟退避，六小时窗口内最多尝试七次。超时后无法确认终态的 turn 会先请求中断且不会盲目重发。自动任务使用 ephemeral thread，结束后取消订阅；取消订阅失败时回收对应 app-server 进程。
 
+`GET /api/v1/settings/auto-hello` 返回最近一次实际发送尝试的日志：无记录时为 `null`，否则为 `{status:"success"|"failure",timestamp}`。日志按整个实例最多保留 5 条，失败重试每次写入一条，接口只返回最新一条；排队、窗口状态暂不可确认或未实际发送的任务不计入日志。
+
 ### SMTP
 
 - `GET /api/v1/settings/smtp` 返回 `{host,port,username,from,fromName,to,security,enabled,configured}`；`password` 为空或省略，默认端口 587、默认 `security=starttls`。

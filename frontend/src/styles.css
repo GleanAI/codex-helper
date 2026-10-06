@@ -609,6 +609,24 @@ header p {
 .checks input {
   width: auto;
 }
+.auto-hello-setting {
+  justify-content: flex-start;
+  gap: 14px;
+}
+.auto-hello-setting > .checks {
+  min-height: 0;
+}
+.auto-hello-log {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.auto-hello-log.success {
+  color: var(--green);
+}
+.auto-hello-log.failure {
+  color: var(--danger);
+}
 .actions {
   display: flex;
   gap: 10px;
@@ -985,6 +1003,12 @@ a {
   .checks {
     min-height: 44px;
     flex-wrap: wrap;
+  }
+  .auto-hello-setting {
+    align-items: flex-start;
+  }
+  .auto-hello-log {
+    white-space: normal;
   }
   .checks input {
     min-height: 22px;

@@ -48,6 +48,36 @@ func TestSystemStatusReturnsBuildVersion(t *testing.T) {
 	}
 }
 
+func TestAutoHelloLogAPIShowsLatestAttempt(t *testing.T) {
+	a := newReminderTestApp(t)
+	_, err := a.store.DB.Exec("INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)", security.HashToken("test-session"), time.Now().Add(time.Hour).Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/settings/auto-hello", nil)
+	request.AddCookie(&http.Cookie{Name: "session", Value: "test-session"})
+	a.api(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "null\n" {
+		t.Fatalf("empty log response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if _, err = a.store.DB.Exec("INSERT INTO auto_hello_logs(account_id,status,attempted_at) VALUES(1,'failure',123)"); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	a.api(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("log response status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body AutoHelloLog
+	if err = json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "failure" || body.Timestamp != 123 {
+		t.Fatalf("log response=%#v", body)
+	}
+}
+
 func TestDecodeRejectsTrailingAndOversizedJSON(t *testing.T) {
 	tests := []struct {
 		name string

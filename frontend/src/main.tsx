@@ -46,11 +46,13 @@ import {
   decodeDashboard,
   decodeDeviceLogin,
   decodeDeviceLoginStatus,
+  decodeAutoHelloLog,
   decodeGeneral,
   decodeOK,
   decodeSMTP,
   decodeTelegram,
   type Account,
+  type AutoHelloLog,
   type Dashboard as Dash,
   type DeviceLogin,
   type GeneralSettings,
@@ -1367,8 +1369,20 @@ function SecuritySettings() {
     </form>
   );
 }
+function formatAutoHelloLogTime(timestamp: number, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "short",
+      timeStyle: "short",
+      timeZone: timezone,
+    }).format(new Date(timestamp * 1000));
+  } catch {
+    return new Date(timestamp * 1000).toLocaleString();
+  }
+}
 function General() {
   const [v, setV] = useState<GeneralSettings | null>(null),
+    [helloLog, setHelloLog] = useState<AutoHelloLog | null>(null),
     [msg, setMsg] = useState<FeedbackMessage | null>(null),
     [loadError, setLoadError] = useState("");
   const { applyTheme } = useTheme();
@@ -1390,6 +1404,30 @@ function General() {
     const controller = new AbortController();
     void loadGeneral(controller.signal, true);
     return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        setHelloLog(
+          await getEventually(
+            "settings/auto-hello",
+            decodeAutoHelloLog,
+            controller.signal,
+          ),
+        );
+      } catch {
+        if (controller.signal.aborted) return;
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(poll, 30_000);
+      }
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, []);
   if (!v)
     return loadError ? (
@@ -1489,14 +1527,24 @@ function General() {
           />
           重置后确认
         </label>
-        <label className="checks">
-          <input
-            type="checkbox"
-            checked={v.autoHello}
-            onChange={(e) => setV({ ...v, autoHello: e.target.checked })}
-          />
-          5 小时窗口未使用时自动发送 Hello
-        </label>
+        <div className="checks auto-hello-setting">
+          <label className="checks">
+            <input
+              type="checkbox"
+              checked={v.autoHello}
+              onChange={(e) => setV({ ...v, autoHello: e.target.checked })}
+            />
+            5 小时窗口未使用时自动发送 Hello
+          </label>
+          <span
+            className={`auto-hello-log ${helloLog?.status ?? "empty"}`}
+            aria-live="polite"
+          >
+            {helloLog
+              ? `${helloLog.status === "success" ? "发送成功" : "发送失败"} · ${formatAutoHelloLogTime(helloLog.timestamp, v.timezone)}`
+              : "暂无发送记录"}
+          </span>
+        </div>
       </div>
       <button>保存设置</button>
       {msg && (
