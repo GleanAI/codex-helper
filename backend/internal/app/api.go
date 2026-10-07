@@ -657,7 +657,7 @@ func (a *App) generalAPI(w http.ResponseWriter, r *http.Request) {
 	if previous.AutoHello && !g.AutoHello {
 		a.reminderSendMu.Lock()
 		_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error=''
-			WHERE kind='auto_hello' AND status IN ('staged','pending','failed')`)
+			WHERE kind IN ('auto_hello','auto_hello_weekly') AND status IN ('staged','pending','failed')`)
 		a.reminderSendMu.Unlock()
 	}
 	jsonOut(w, 200, g)
@@ -753,7 +753,8 @@ func (a *App) syncAccount(ctx context.Context, id int64) (syncErr error) {
 	if previousEmail == nil {
 		previousEmail = rt.dash.Account.Email
 	}
-	if usageIdentityChanged(previousEmail, d.Account.Email) {
+	identityChanged := usageIdentityChanged(previousEmail, d.Account.Email)
+	if identityChanged {
 		if err := a.store.DeleteDailyUsage(id); err != nil {
 			return err
 		}
@@ -826,7 +827,7 @@ func (a *App) syncAccount(ctx context.Context, id int64) (syncErr error) {
 	if e != nil {
 		return e
 	}
-	_, e = a.storeLimitSnapshots(d)
+	_, e = a.storeLimitSnapshotsWithWeeklyResets(d, !identityChanged)
 	if e != nil {
 		return e
 	}
@@ -888,10 +889,17 @@ const resetDropTolerance = 0.01
 
 const (
 	autoHelloWindowMinutes = 5 * 60
+	weeklyWindowMinutes    = 7 * 24 * 60
 	autoHelloTolerance     = 5 * time.Minute
 )
 
 func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
+	return a.storeLimitSnapshotsWithWeeklyResets(d, true)
+}
+
+// A reused account slot must establish a baseline for its new identity before
+// its weekly resets can be compared against persisted snapshots.
+func (a *App) storeLimitSnapshotsWithWeeklyResets(d Dashboard, allowWeeklyResets bool) ([]string, error) {
 	tx, err := a.store.DB.Begin()
 	if err != nil {
 		return nil, err
@@ -902,14 +910,27 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 	windows := notificationWindows(d.Limits)
 	for _, x := range d.Limits {
 		var previousID, previousFetchedAt, previousResetsAt int64
+		var previousDuration int
 		var previousUsed float64
-		snapshotErr := tx.QueryRow(`SELECT id,used_percent,resets_at,fetched_at FROM limit_snapshots
+		snapshotErr := tx.QueryRow(`SELECT id,used_percent,resets_at,fetched_at,duration_mins FROM limit_snapshots
 			WHERE account_id=? AND limit_id=? AND window_type=? ORDER BY fetched_at DESC,id DESC LIMIT 1`,
-			d.AccountID, x.LimitID, x.WindowType).Scan(&previousID, &previousUsed, &previousResetsAt, &previousFetchedAt)
+			d.AccountID, x.LimitID, x.WindowType).Scan(&previousID, &previousUsed, &previousResetsAt, &previousFetchedAt, &previousDuration)
 		if snapshotErr != nil && snapshotErr != sql.ErrNoRows {
 			return nil, snapshotErr
 		}
-		age := d.FetchedAt - previousFetchedAt
+		normalReset, earlyReset := confirmedLimitReset(previousResetsAt, previousFetchedAt, previousUsed, x, d.FetchedAt)
+		if snapshotErr == nil && allowWeeklyResets && g.AutoHello && previousDuration == weeklyWindowMinutes &&
+			isOrdinaryWeeklyWindow(x) && x.ResetsAt > d.FetchedAt && (normalReset || earlyReset) {
+			key := fmt.Sprintf("%d:%s:%s:%d:weekly-detected-hello", d.AccountID, x.LimitID, x.WindowType, previousID)
+			if normalReset {
+				key = fmt.Sprintf("%d:%s:%s:%d:weekly-hello", d.AccountID, x.LimitID, x.WindowType, previousResetsAt)
+			}
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO notifications
+				(dedupe_key,channel,kind,status,attempts,last_error,scheduled_at,sent_at,body,account_id)
+				VALUES(?,'codex','auto_hello_weekly','staged',0,'',?,NULL,'Hello',?)`, key, d.FetchedAt, d.AccountID); err != nil {
+				return nil, err
+			}
+		}
 		resetBoundary, stateErr := advanceAutoHelloWindow(tx, d.AccountID, x, d.FetchedAt, g.AutoHello)
 		if stateErr != nil {
 			return nil, stateErr
@@ -949,9 +970,6 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 			}
 		}
 		if snapshotErr == nil && g.NotifyAfter {
-			withinScheduledWindow := previousResetsAt > 0 && previousResetsAt <= d.FetchedAt && d.FetchedAt-previousResetsAt <= int64((6*time.Hour).Seconds())
-			normalReset := withinScheduledWindow && x.ResetsAt > previousResetsAt && x.ResetsAt > d.FetchedAt
-			earlyReset := previousResetsAt > d.FetchedAt && age >= 0 && age <= int64((6*time.Hour).Seconds()) && previousUsed-x.UsedPercent > resetDropTolerance
 			if normalReset || earlyReset {
 				kind := "detected_after"
 				key := fmt.Sprintf("%d:%s:%s:detected:%d", d.AccountID, x.LimitID, x.WindowType, previousID)
@@ -979,6 +997,21 @@ func (a *App) storeLimitSnapshots(d Dashboard) ([]string, error) {
 		return nil, err
 	}
 	return resetNotifications, nil
+}
+
+func confirmedLimitReset(previousResetsAt, previousFetchedAt int64, previousUsed float64, current LimitBucket, fetchedAt int64) (normal, early bool) {
+	age := fetchedAt - previousFetchedAt
+	withinScheduledWindow := previousResetsAt > 0 && previousResetsAt <= fetchedAt && fetchedAt-previousResetsAt <= int64((6*time.Hour).Seconds())
+	normal = withinScheduledWindow && current.ResetsAt > previousResetsAt && current.ResetsAt > fetchedAt
+	early = previousResetsAt > fetchedAt && age >= 0 && age <= int64((6*time.Hour).Seconds()) && previousUsed-current.UsedPercent > resetDropTolerance
+	return normal, early
+}
+
+func isOrdinaryWeeklyWindow(limit LimitBucket) bool {
+	if limit.WindowDurationMinutes != weeklyWindowMinutes || strings.EqualFold(strings.TrimSpace(limit.LimitID), "gpt-reserve") {
+		return false
+	}
+	return limit.LimitName == nil || !strings.EqualFold(strings.TrimSpace(*limit.LimitName), "gpt-reserve")
 }
 
 // Advance only from observed upstream activity, never from a sliding idle

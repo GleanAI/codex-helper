@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"codex-helper/internal/codex"
+	"codex-helper/internal/store"
 )
 
 type notificationEvent struct {
@@ -46,11 +47,12 @@ type autoHelloTaskIdentity struct {
 	accountID  int64
 	limitID    string
 	windowType string
+	weekly     bool
 }
 
 var (
 	errAutoHelloNoLongerNeeded = errors.New("5 小时窗口已不再处于未使用状态")
-	errAutoHelloStateUnknown   = errors.New("5 小时窗口状态暂不可确认")
+	errAutoHelloStateUnknown   = errors.New("自动 Hello 所需账号或窗口状态暂不可确认")
 	autoHelloRetryDelays       = []time.Duration{0, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour}
 )
 
@@ -590,17 +592,26 @@ func (a *App) sendPendingReminders(now time.Time) {
 	_ = rows.Close()
 	superseded := map[int]bool{}
 	latestAutoHello := map[autoHelloTaskIdentity]int{}
+	weeklyHello := map[int64]int{}
 	for i := range pending {
-		if pending[i].kind != "auto_hello" {
+		if !isAutoHelloKind(pending[i].kind) {
 			continue
 		}
-		identity, ok := parseAutoHelloTaskKey(pending[i].key, pending[i].accountID)
+		identity, ok := parseHelloTaskKey(pending[i].key, pending[i].accountID, pending[i].kind)
 		if !ok {
 			superseded[i] = true
 			_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, pending[i].key)
 			continue
 		}
 		pending[i].autoHello = identity
+		if identity.weekly {
+			previous, exists := weeklyHello[identity.accountID]
+			if !exists || pending[i].scheduledAt > pending[previous].scheduledAt ||
+				(pending[i].scheduledAt == pending[previous].scheduledAt && pending[i].key > pending[previous].key) {
+				weeklyHello[identity.accountID] = i
+			}
+			continue
+		}
 		if previous, exists := latestAutoHello[identity]; exists {
 			keep, discard := i, previous
 			if pending[previous].scheduledAt > pending[i].scheduledAt ||
@@ -614,18 +625,42 @@ func (a *App) sendPendingReminders(now time.Time) {
 		}
 		latestAutoHello[identity] = i
 	}
+	// A weekly reset requires a turn even when the five-hour window was used.
+	// Let that turn satisfy all pending Hello triggers for the same account.
+	groups := make(map[int][]store.AutoHelloTask)
+	for i, p := range pending {
+		if superseded[i] || !isAutoHelloKind(p.kind) {
+			continue
+		}
+		leader := i
+		if weekly, exists := weeklyHello[p.accountID]; exists {
+			leader = weekly
+			if i != leader {
+				superseded[i] = true
+			}
+		}
+		groups[leader] = append(groups[leader], store.AutoHelloTask{
+			Key: p.key, AccountID: p.accountID, LimitID: p.autoHello.limitID,
+			WindowType: p.autoHello.windowType, ScheduledAt: p.scheduledAt, Weekly: p.autoHello.weekly,
+		})
+	}
+	finishGroup := func(index int, status string, attempts int, lastError string, completedAt *int64, attemptedAt int64) {
+		if saveErr := a.store.RecordAutoHelloResults(groups[index], status, attempts, lastError, completedAt, attemptedAt); saveErr != nil {
+			log.Printf("save auto Hello result for account %d: %v", pending[index].accountID, saveErr)
+		}
+	}
 	for i, p := range pending {
 		if superseded[i] {
 			continue
 		}
-		if p.kind == "auto_hello" {
+		if isAutoHelloKind(p.kind) {
 			if !a.general().AutoHello {
-				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='' WHERE dedupe_key=?`, p.key)
+				finishGroup(i, "expired", p.attempts, "", nil, 0)
 				continue
 			}
 			due, exhausted := autoHelloRetryDue(p.scheduledAt, p.attempts, now)
 			if exhausted {
-				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired' WHERE dedupe_key=?`, p.key)
+				finishGroup(i, "expired", p.attempts, "", nil, 0)
 				continue
 			}
 			if !due {
@@ -633,11 +668,11 @@ func (a *App) sendPendingReminders(now time.Time) {
 			}
 			err := a.sendAutoHello(p.autoHello, p.body)
 			if errors.Is(err, errAutoHelloNoLongerNeeded) {
-				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='expired',last_error='',sent_at=NULL WHERE dedupe_key=?`, p.key)
+				finishGroup(i, "expired", p.attempts, "", nil, 0)
 				continue
 			}
 			if errors.Is(err, errAutoHelloStateUnknown) {
-				_, _ = a.store.DB.Exec(`UPDATE notifications SET status='failed',last_error=?,sent_at=NULL WHERE dedupe_key=?`, errorText(err), p.key)
+				finishGroup(i, "failed", p.attempts, errorText(err), nil, 0)
 				continue
 			}
 			attemptedAt := time.Now().Unix()
@@ -652,10 +687,7 @@ func (a *App) sendPendingReminders(now time.Time) {
 					status = "expired"
 				}
 			}
-			if saveErr := a.store.RecordAutoHelloResult(p.key, p.accountID, p.autoHello.limitID, p.autoHello.windowType,
-				p.scheduledAt, status, attempts, errorText(err), sent, attemptedAt); saveErr != nil {
-				log.Printf("save auto Hello result for account %d: %v", p.accountID, saveErr)
-			}
+			finishGroup(i, status, attempts, errorText(err), sent, attemptedAt)
 			continue
 		}
 		event, structured := decodeNotification(p.body)
@@ -701,6 +733,24 @@ func autoHelloRetryDue(scheduledAt int64, attempts int, now time.Time) (bool, bo
 	return !now.Before(next), false
 }
 
+func isAutoHelloKind(kind string) bool {
+	return kind == "auto_hello" || kind == "auto_hello_weekly"
+}
+
+func parseHelloTaskKey(key string, accountID int64, kind string) (autoHelloTaskIdentity, bool) {
+	if kind == "auto_hello" {
+		return parseAutoHelloTaskKey(key, accountID)
+	}
+	for _, suffix := range []string{":weekly-hello", ":weekly-detected-hello"} {
+		if base, ok := strings.CutSuffix(key, suffix); ok && kind == "auto_hello_weekly" {
+			identity, valid := parseAutoHelloTaskKey(base+":hello", accountID)
+			identity.weekly = true
+			return identity, valid
+		}
+	}
+	return autoHelloTaskIdentity{}, false
+}
+
 func parseAutoHelloTaskKey(key string, accountID int64) (autoHelloTaskIdentity, bool) {
 	identity := autoHelloTaskIdentity{accountID: accountID}
 	base, ok := strings.CutSuffix(key, ":hello")
@@ -739,15 +789,24 @@ func (a *App) sendAutoHello(task autoHelloTaskIdentity, message string) error {
 	if rt.dash.Stale || rt.dash.FetchedAt <= 0 {
 		return errAutoHelloStateUnknown
 	}
+	if task.weekly && !rt.dash.Account.Connected {
+		return errAutoHelloStateUnknown
+	}
 	for _, limit := range rt.dash.Limits {
 		if limit.LimitID != task.limitID || limit.WindowType != task.windowType {
 			continue
 		}
-		if limit.UsedPercent > 0 {
-			return errAutoHelloNoLongerNeeded
-		}
-		if !qualifiesForAutoHello(limit, rt.dash.FetchedAt) {
-			return errAutoHelloStateUnknown
+		if task.weekly {
+			if !isOrdinaryWeeklyWindow(limit) || limit.ResetsAt <= rt.dash.FetchedAt {
+				return errAutoHelloStateUnknown
+			}
+		} else {
+			if limit.UsedPercent > 0 {
+				return errAutoHelloNoLongerNeeded
+			}
+			if !qualifiesForAutoHello(limit, rt.dash.FetchedAt) {
+				return errAutoHelloStateUnknown
+			}
 		}
 		parent := a.ctx
 		if parent == nil {

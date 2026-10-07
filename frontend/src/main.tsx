@@ -1534,7 +1534,7 @@ function General() {
               checked={v.autoHello}
               onChange={(e) => setV({ ...v, autoHello: e.target.checked })}
             />
-            5 小时窗口未使用时自动发送 Hello
+            5 小时窗口未使用或普通 7 天窗口重置后自动发送 Hello
           </label>
           <span
             className={`auto-hello-log ${helloLog?.status ?? "empty"}`}

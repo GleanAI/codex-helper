@@ -118,7 +118,7 @@ test("exposes the automatic Hello switch in general settings", async ({
 }) => {
   await openSettings(page);
   const toggle = page.getByRole("checkbox", {
-    name: "5 小时窗口未使用时自动发送 Hello",
+    name: "5 小时窗口未使用或普通 7 天窗口重置后自动发送 Hello",
   });
   await expect(toggle).toBeVisible();
   await expect(toggle).not.toBeChecked();

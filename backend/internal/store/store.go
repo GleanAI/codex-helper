@@ -199,26 +199,47 @@ func (s *Store) migrateAutoHelloState() error {
 	return tx.Commit()
 }
 
+type AutoHelloTask struct {
+	Key         string
+	AccountID   int64
+	LimitID     string
+	WindowType  string
+	ScheduledAt int64
+	Weekly      bool
+}
+
 // RecordAutoHelloResult commits delivery and episode completion together.
 func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, windowType string, scheduledAt int64, status string, attempts int, lastError string, completedAt *int64, attemptedAtValues ...int64) error {
 	attemptedAt := int64(0)
 	if len(attemptedAtValues) > 0 {
 		attemptedAt = attemptedAtValues[0]
 	}
+	return s.RecordAutoHelloResults([]AutoHelloTask{{Key: key, AccountID: accountID, LimitID: limitID, WindowType: windowType, ScheduledAt: scheduledAt}},
+		status, attempts, lastError, completedAt, attemptedAt)
+}
+
+// RecordAutoHelloResults records one actual send for all tasks it satisfies.
+// Weekly tasks have no idle episode; only associated five-hour tasks advance it.
+func (s *Store) RecordAutoHelloResults(tasks []AutoHelloTask, status string, attempts int, lastError string, completedAt *int64, attemptedAt int64) error {
+	if len(tasks) == 0 {
+		return nil
+	}
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE notifications SET status=?,attempts=?,last_error=?,sent_at=? WHERE dedupe_key=?`,
-		status, attempts, lastError, completedAt, key); err != nil {
-		return err
-	}
-	if status == "sent" && completedAt != nil {
-		if _, err = tx.Exec(`UPDATE auto_hello_state SET completed_at=?
-			WHERE account_id=? AND limit_id=? AND window_type=? AND started_at<=?`,
-			*completedAt, accountID, limitID, windowType, scheduledAt); err != nil {
+	for _, task := range tasks {
+		if _, err = tx.Exec(`UPDATE notifications SET status=?,attempts=?,last_error=?,sent_at=? WHERE dedupe_key=?`,
+			status, attempts, lastError, completedAt, task.Key); err != nil {
 			return err
+		}
+		if status == "sent" && completedAt != nil && !task.Weekly {
+			if _, err = tx.Exec(`UPDATE auto_hello_state SET completed_at=?
+				WHERE account_id=? AND limit_id=? AND window_type=? AND started_at<=?`,
+				*completedAt, task.AccountID, task.LimitID, task.WindowType, task.ScheduledAt); err != nil {
+				return err
+			}
 		}
 	}
 	if attemptedAt > 0 {
@@ -226,7 +247,7 @@ func (s *Store) RecordAutoHelloResult(key string, accountID int64, limitID, wind
 		if status == "sent" {
 			logStatus = "success"
 		}
-		if _, err = tx.Exec(`INSERT INTO auto_hello_logs(account_id,status,attempted_at) VALUES(?,?,?)`, accountID, logStatus, attemptedAt); err != nil {
+		if _, err = tx.Exec(`INSERT INTO auto_hello_logs(account_id,status,attempted_at) VALUES(?,?,?)`, tasks[0].AccountID, logStatus, attemptedAt); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(`DELETE FROM auto_hello_logs WHERE id NOT IN (
@@ -776,7 +797,7 @@ func (s *Store) DeleteAutoHelloData(accountID int64) error {
 	if _, err = tx.Exec("DELETE FROM auto_hello_logs WHERE account_id=?", accountID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {
+	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind IN ('auto_hello','auto_hello_weekly')", accountID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -797,7 +818,7 @@ func (s *Store) DisconnectAccount(accountID int64) error {
 	if _, err = tx.Exec("DELETE FROM auto_hello_logs WHERE account_id=?", accountID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind='auto_hello'", accountID); err != nil {
+	if _, err = tx.Exec("DELETE FROM notifications WHERE account_id=? AND kind IN ('auto_hello','auto_hello_weekly')", accountID); err != nil {
 		return err
 	}
 	result, err := tx.Exec("UPDATE accounts SET email=NULL,plan_type=NULL,connected=0,updated_at=? WHERE id=?", time.Now().Unix(), accountID)
